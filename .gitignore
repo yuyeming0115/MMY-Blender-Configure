@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Blender 临时文件
+.blend1
+*.blend1
+.blend2
+*.blend2
+.blend3
+*.blend3
+*.bak
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Claude Code
+.claude/
