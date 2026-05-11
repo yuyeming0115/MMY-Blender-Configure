@@ -101,10 +101,24 @@ class MMY_OT_ImportConfig(bpy.types.Operator):
                 include_startup=prefs.include_startup,
                 include_datafiles=prefs.include_datafiles,
             )
+            self._check_version(manifest)
             self.report({'INFO'}, "导入成功，请重启 Blender 生效")
         except Exception as e:
             self.report({'ERROR'}, f"导入失败：{e}")
         return {'FINISHED'}
+
+    def _check_version(self, manifest):
+        backup_ver = manifest.get("blender_version", "")
+        current_ver = ".".join(str(v) for v in bpy.app.version)
+        if not backup_ver:
+            return
+        backup_major = backup_ver.split(".")[0]
+        current_major = current_ver.split(".")[0]
+        if backup_major != current_major:
+            self.report(
+                {'WARNING'},
+                f"版本不匹配：备份来自 Blender {backup_ver}，当前为 {current_ver}，可能存在兼容性问题"
+            )
 
 
 classes = (MMY_OT_BackupConfig, MMY_OT_ExportConfig, MMY_OT_ImportConfig)

@@ -13,6 +13,7 @@ from . import preferences, operators, ui, addon_timer
 
 def register():
     addon_timer.manager.patch()
+    addon_timer.manager.register_fallback()
     preferences.register()
     operators.register()
     ui.register()

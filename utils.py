@@ -114,11 +114,27 @@ def unpack_config(
     include_config: bool, include_presets: bool,
     include_startup: bool, include_datafiles: bool,
 ):
-    config_dir = get_config_dir()
-    addons_dir = get_addons_dir()
+    if not zip_path.exists():
+        raise FileNotFoundError(f"备份文件不存在：{zip_path}")
+
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            bad = zf.testzip()
+            if bad is not None:
+                raise zipfile.BadZipFile(f"备份文件损坏：{bad}")
+    except zipfile.BadZipFile:
+        raise
+    except Exception:
+        raise ValueError(f"无效的 zip 文件：{zip_path}")
 
     with zipfile.ZipFile(zip_path, 'r') as zf:
+        config_dir = get_config_dir()
+        addons_dir = get_addons_dir()
         names = zf.namelist()
+
+        if "manifest.json" not in names:
+            raise ValueError("备份文件格式无效：缺少 manifest.json")
+
         manifest = json.loads(zf.read("manifest.json"))
         includes_in_backup = manifest.get("includes", [])
 

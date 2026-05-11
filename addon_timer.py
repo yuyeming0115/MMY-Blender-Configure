@@ -1,5 +1,7 @@
+import sys
 import time
 import traceback
+import bpy
 from dataclasses import dataclass, field
 
 
@@ -14,6 +16,7 @@ class AddonTimerManager:
     def __init__(self):
         self.records: list[AddonLoadRecord] = []
         self._patched = False
+        self._fallback_registered = False
 
     def record(self, name: str, elapsed: float, error: str = ""):
         self.records.append(AddonLoadRecord(name, elapsed, error))
@@ -45,6 +48,27 @@ class AddonTimerManager:
             self._patched = True
         except Exception:
             pass
+
+    def register_fallback(self):
+        """注册兜底 timer，延迟扫描未被 monkey-patch 捕获的 addon。"""
+        if self._fallback_registered:
+            return
+        self._fallback_registered = True
+
+        manager = self
+
+        def _scan_early_addons():
+            try:
+                prefs = bpy.context.preferences.addons
+                recorded = {r.name for r in manager.records}
+                for mod_name in prefs.keys():
+                    if mod_name not in recorded and mod_name in sys.modules:
+                        manager.record(mod_name, 0.0, "早期加载（未在监控注入前完成）")
+            except Exception:
+                pass
+            return None  # 只执行一次
+
+        bpy.app.timers.register(lambda: _scan_early_addons(), first_interval=2.0)
 
     def unpatch(self):
         if not self._patched:
