@@ -36,13 +36,18 @@ class AddonTimerManager:
             def _timed_enable(module_name, *args, **kwargs):
                 t0 = time.perf_counter()
                 err = ""
+                mod = None
                 try:
-                    result = original(module_name, *args, **kwargs)
+                    mod = original(module_name, *args, **kwargs)
                 except Exception:
                     err = traceback.format_exc()
-                    result = None
-                manager.record(module_name, time.perf_counter() - t0, err)
-                return result
+                elapsed = time.perf_counter() - t0
+                # mod 为 None 或加载失败才记为错误
+                if not mod or err:
+                    manager.record(module_name, elapsed, err or "模块加载返回 None")
+                else:
+                    manager.record(module_name, elapsed)
+                return mod
 
             addon_utils.enable = _timed_enable
             self._patched = True
