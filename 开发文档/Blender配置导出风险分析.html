@@ -225,8 +225,8 @@
         /* 版本兼容矩阵 */
         .version-matrix {
             display: grid;
-            grid-template-columns: repeat(5, 1fr);
-            gap: 10px;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 15px;
             margin-top: 20px;
         }
 
@@ -241,18 +241,20 @@
             font-weight: bold;
             margin-bottom: 10px;
             color: var(--accent);
+            white-space: nowrap;
         }
 
         .compat-grid {
             display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            grid-template-columns: 1fr;
             gap: 5px;
         }
 
         .compat-item {
-            padding: 5px;
+            padding: 8px;
             border-radius: 4px;
-            font-size: 0.8rem;
+            font-size: 0.85rem;
+            white-space: nowrap;
         }
 
         .compat-ok { background: var(--success); color: #000; }
