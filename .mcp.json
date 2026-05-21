@@ -1,9 +1,0 @@
-{
-  "duckduckgo-search": {
-    "command": "python",
-    "args": ["${CLAUDE_PROJECT_ROOT}/mcp_search_server.py"],
-    "env": {
-      "PYTHONIOENCODING": "utf-8"
-    }
-  }
-}
