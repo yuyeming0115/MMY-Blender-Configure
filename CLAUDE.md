@@ -84,14 +84,20 @@ def get_items(self, context):
 
 ### 自动打包机制
 
-**触发时机**：每次功能完成或 Bug 修复合并到 main 后，自动打包分发版本。
+**触发时机**：每次功能完成或 Bug 修复合并到 main 后，执行打包。
+
+**执行顺序**：
+1. 代码提交并推送到 main
+2. 执行 `python pack.py` 打包
+3. 提交打包文件到 releases/ 目录
+4. 推送更新
 
 **打包命令**：
 ```bash
 python pack.py
 ```
 
-**输出位置**：`releases/MMY_Blender_Toolkit_v0.5.0_20260521_1430.zip`
+**输出位置**：`releases/MMY_Blender_Toolkit_v{版本号}_{日期时间}.zip`
 
 **命名格式**：`MMY_Blender_Toolkit_{版本号}_{日期时间}.zip`
 

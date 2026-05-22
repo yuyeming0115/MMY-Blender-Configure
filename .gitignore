@@ -24,6 +24,3 @@ desktop.ini
 
 # Claude Code
 .claude/
-
-# 打包输出
-releases/
