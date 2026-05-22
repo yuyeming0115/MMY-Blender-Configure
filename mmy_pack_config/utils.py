@@ -14,6 +14,101 @@ def get_addons_dir() -> Path:
     return Path(bpy.utils.user_resource('SCRIPTS')) / "addons"
 
 
+def is_portable_mode() -> bool:
+    """检测 Blender 是否运行在 portable 模式。"""
+    blender_dir = Path(bpy.app.binary_path).parent
+    portable_dir = blender_dir / "portable"
+
+    if not portable_dir.exists():
+        return False
+
+    config_dir = Path(bpy.utils.user_resource('CONFIG'))
+    try:
+        parts = config_dir.parts
+        if 'portable' in parts:
+            return True
+    except:
+        pass
+
+    return False
+
+
+def get_portable_base_dir() -> Path | None:
+    """获取 portable 模式的基目录（Blender 安装目录）。"""
+    if not is_portable_mode():
+        return None
+    return Path(bpy.app.binary_path).parent
+
+
+def detect_path_dependencies() -> list[str]:
+    """检测当前配置中的路径依赖项。"""
+    dependencies = []
+
+    # 1. 检查书签文件
+    bookmarks_file = Path(bpy.utils.user_resource('CONFIG')) / 'bookmarks.txt'
+    if bookmarks_file.exists():
+        try:
+            content = bookmarks_file.read_text(encoding='utf-8')
+            if any(line.startswith('/') or ':' in line for line in content.splitlines() if line.strip()):
+                dependencies.append('bookmarks')
+        except:
+            pass
+
+    # 2. 检查资产库路径
+    prefs = bpy.context.preferences
+    if prefs.filepaths.asset_libraries:
+        for lib in prefs.filepaths.asset_libraries:
+            if lib.path and not lib.path.startswith('//'):
+                dependencies.append('asset_library')
+                break
+
+    return dependencies
+
+
+def check_mode_compatibility(manifest: dict) -> dict | None:
+    """检查导入时模式兼容性。"""
+    current_portable = is_portable_mode()
+    backup_portable = manifest.get("portable_mode", False)
+
+    if current_portable == backup_portable:
+        # 同为 portable 模式，但基路径不同时也需提示
+        if current_portable:
+            backup_base = manifest.get("portable_base_dir", "")
+            current_base = str(get_portable_base_dir())
+            if backup_base and backup_base != current_base:
+                return {
+                    "type": "portable_path_change",
+                    "title": "Portable 基路径变化",
+                    "message": f"备份来自 {backup_base}，当前为 {current_base}",
+                    "details": ["路径依赖项（书签、资产库）可能需要手动调整"]
+                }
+        return None
+
+    # 模式不一致
+    if backup_portable and not current_portable:
+        return {
+            "type": "portable_to_normal",
+            "title": "Portable → 普通模式迁移",
+            "message": "备份来自 Portable 模式，当前为普通模式",
+            "details": [
+                f"配置将导入到：{bpy.utils.user_resource('CONFIG')}",
+                "路径依赖项（书签、资产库）可能需要手动调整"
+            ]
+        }
+    else:
+        portable_base = get_portable_base_dir()
+        target_path = f"{portable_base}/portable/{bpy.app.version[0]}.{bpy.app.version[1]}/config" if portable_base else ""
+        return {
+            "type": "normal_to_portable",
+            "title": "普通 → Portable 模式迁移",
+            "message": "备份来自普通模式，当前为 Portable 模式",
+            "details": [
+                f"配置将导入到：{target_path}",
+                "路径依赖项（书签、资产库）可能需要手动调整"
+            ]
+        }
+
+
 def _dir_sources():
     """返回目录勾选项 -> (源目录路径, zip内路径) 的映射。"""
     return {
@@ -86,10 +181,17 @@ def pack_config(
                 _pack_dir(zf, src, arc)
             includes.append("datafiles")
 
+        path_deps = detect_path_dependencies()
         manifest = {
             "blender_version": ".".join(str(v) for v in bpy.app.version),
+            "blender_version_sub": bpy.app.version[2],
             "created_at": datetime.now().isoformat(),
+            "portable_mode": is_portable_mode(),
+            "portable_base_dir": str(get_portable_base_dir()) if is_portable_mode() else "",
+            "source_config_path": "portable/" + ".".join(str(v) for v in bpy.app.version[:2]) + "/config" if is_portable_mode() else "",
             "includes": includes,
+            "has_path_dependencies": len(path_deps) > 0,
+            "path_dependency_types": path_deps,
         }
         zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
 

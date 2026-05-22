@@ -102,6 +102,7 @@ class MMY_OT_ImportConfig(bpy.types.Operator):
                 include_datafiles=prefs.include_datafiles,
             )
             self._check_version(manifest)
+            self._check_mode_compatibility(manifest)
             self.report({'INFO'}, "导入成功，请重启 Blender 生效")
         except Exception as e:
             self.report({'ERROR'}, f"导入失败：{e}")
@@ -119,6 +120,13 @@ class MMY_OT_ImportConfig(bpy.types.Operator):
                 {'WARNING'},
                 f"版本不匹配：备份来自 Blender {backup_ver}，当前为 {current_ver}，可能存在兼容性问题"
             )
+
+    def _check_mode_compatibility(self, manifest):
+        """检查 portable 模式兼容性，显示警告但不阻止导入。"""
+        warning = utils.check_mode_compatibility(manifest)
+        if warning:
+            details_str = " | ".join(warning["details"])
+            self.report({'WARNING'}, f"{warning['message']} - {details_str}")
 
 
 classes = (MMY_OT_BackupConfig, MMY_OT_ExportConfig, MMY_OT_ImportConfig)
