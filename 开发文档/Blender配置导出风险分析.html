@@ -101,21 +101,10 @@
             box-shadow: 0 10px 40px rgba(0,0,0,0.3);
         }
 
-        .config-card.required {
-            border-color: var(--success);
-        }
-
-        .config-card.recommended {
-            border-color: var(--info);
-        }
-
-        .config-card.optional {
-            border-color: var(--text-secondary);
-        }
-
-        .config-card.risky {
-            border-color: var(--danger);
-        }
+        .config-card.required { border-color: var(--success); }
+        .config-card.recommended { border-color: var(--info); }
+        .config-card.optional { border-color: var(--text-secondary); }
+        .config-card.risky { border-color: var(--danger); }
 
         .card-header {
             display: flex;
@@ -124,10 +113,7 @@
             margin-bottom: 15px;
         }
 
-        .card-title {
-            font-size: 1.3rem;
-            font-weight: bold;
-        }
+        .card-title { font-size: 1.3rem; font-weight: bold; }
 
         .status-badge {
             padding: 4px 12px;
@@ -140,9 +126,7 @@
         .status-optional { background: var(--text-secondary); color: #fff; }
         .status-risky { background: var(--danger); color: #fff; }
 
-        .card-content {
-            margin-bottom: 15px;
-        }
+        .card-content { margin-bottom: 15px; }
 
         .file-path {
             background: var(--bg-dark);
@@ -163,9 +147,7 @@
             color: var(--text-primary);
         }
 
-        .content-list li {
-            margin-bottom: 5px;
-        }
+        .content-list li { margin-bottom: 5px; }
 
         /* 风险分析区域 */
         .risk-section {
@@ -202,25 +184,7 @@
             font-weight: bold;
         }
 
-        .risk-table tr:hover {
-            background: var(--bg-hover);
-        }
-
-        .risk-cell {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .risk-icon {
-            width: 24px;
-            height: 24px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 12px;
-        }
+        .risk-table tr:hover { background: var(--bg-hover); }
 
         /* 版本兼容矩阵 */
         .version-matrix {
@@ -269,10 +233,7 @@
             margin-bottom: 30px;
         }
 
-        .recommendation h2 {
-            color: var(--success);
-            margin-bottom: 15px;
-        }
+        .recommendation h2 { color: var(--success); margin-bottom: 15px; }
 
         .recommendation-list {
             display: grid;
@@ -287,14 +248,8 @@
             border-left: 4px solid var(--success);
         }
 
-        .rec-title {
-            font-weight: bold;
-            margin-bottom: 5px;
-        }
-
-        .rec-desc {
-            color: var(--text-secondary);
-        }
+        .rec-title { font-weight: bold; margin-bottom: 5px; }
+        .rec-desc { color: var(--text-secondary); }
 
         /* 流程图 */
         .flow-section {
@@ -304,10 +259,7 @@
             margin-bottom: 30px;
         }
 
-        .flow-section h2 {
-            color: var(--info);
-            margin-bottom: 20px;
-        }
+        .flow-section h2 { color: var(--info); margin-bottom: 20px; }
 
         .flow-diagram {
             display: flex;
@@ -325,10 +277,7 @@
             min-width: 150px;
         }
 
-        .flow-arrow {
-            color: var(--accent);
-            font-size: 2rem;
-        }
+        .flow-arrow { color: var(--accent); font-size: 2rem; }
 
         .step-number {
             background: var(--accent);
@@ -343,6 +292,130 @@
             font-weight: bold;
         }
 
+        /* FAQ 区域 */
+        .faq-section {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 30px;
+        }
+
+        .faq-section h2 { color: var(--info); margin-bottom: 20px; }
+
+        .faq-item {
+            background: var(--bg-dark);
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border-left: 4px solid var(--info);
+        }
+
+        .faq-question {
+            font-weight: bold;
+            color: var(--accent-light);
+            margin-bottom: 10px;
+        }
+
+        .faq-answer { color: var(--text-primary); }
+
+        .faq-answer ul { margin-left: 20px; margin-top: 10px; }
+
+        /* Python API 区域 */
+        .api-section {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 30px;
+        }
+
+        .api-section h2 { color: var(--warning); margin-bottom: 20px; }
+
+        .code-block {
+            background: #0d1117;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 0.85rem;
+            overflow-x: auto;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .code-block code { color: #c9d1d9; }
+
+        .code-comment { color: #8b949e; }
+        .code-keyword { color: #ff7b72; }
+        .code-string { color: #a5d6ff; }
+        .code-function { color: #d2a8ff; }
+
+        /* 多机同步方案 */
+        .sync-section {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 30px;
+        }
+
+        .sync-section h2 { color: var(--success); margin-bottom: 20px; }
+
+        .sync-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+        }
+
+        .sync-item {
+            background: var(--bg-dark);
+            padding: 15px;
+            border-radius: 8px;
+            border-top: 3px solid var(--info);
+        }
+
+        .sync-title { font-weight: bold; margin-bottom: 8px; }
+        .sync-desc { color: var(--text-secondary); font-size: 0.9rem; }
+        .sync-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            margin-top: 10px;
+        }
+
+        .sync-free { background: var(--success); color: #000; }
+        .sync-paid { background: var(--warning); color: #000; }
+        .sync-advanced { background: var(--info); color: #fff; }
+
+        /* 参考资源 */
+        .resource-section {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 30px;
+        }
+
+        .resource-section h2 { color: var(--accent); margin-bottom: 20px; }
+
+        .resource-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .resource-card {
+            background: var(--bg-dark);
+            padding: 15px;
+            border-radius: 8px;
+        }
+
+        .resource-title { font-weight: bold; margin-bottom: 10px; color: var(--accent-light); }
+        .resource-list { list-style: none; }
+        .resource-list li { margin-bottom: 8px; }
+        .resource-list a {
+            color: var(--info);
+            text-decoration: none;
+        }
+        .resource-list a:hover { text-decoration: underline; }
+
         /* 页脚 */
         .footer {
             text-align: center;
@@ -352,10 +425,7 @@
             margin-top: 40px;
         }
 
-        .footer a {
-            color: var(--accent);
-            text-decoration: none;
-        }
+        .footer a { color: var(--accent); text-decoration: none; }
 
         /* 响应式 */
         @media (max-width: 768px) {
@@ -363,13 +433,15 @@
             .config-grid { grid-template-columns: 1fr; }
             .version-matrix { grid-template-columns: repeat(2, 1fr); }
             .risk-indicator { flex-wrap: wrap; }
+            .flow-diagram { flex-direction: column; }
+            .flow-arrow { transform: rotate(90deg); }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Blender 配置导出分析</h1>
-        <p class="subtitle">必要性评估 + 版本兼容性风险矩阵</p>
+        <p class="subtitle">必要性评估 + 版本兼容性风险矩阵 + 完整指南</p>
 
         <!-- 风险等级指示器 -->
         <div class="risk-indicator">
@@ -406,30 +478,40 @@
                         <li><strong>软件设置</strong>：界面主题、编辑器偏好、系统设置</li>
                         <li><strong>快捷键映射</strong>：所有自定义快捷键</li>
                         <li><strong>插件状态</strong>：已启用插件的列表</li>
+                        <li><strong>路径设置</strong>：渲染输出、临时文件、资产库路径</li>
                     </ul>
                 </div>
                 <div class="risk-analysis">
                     <table class="risk-table">
-                        <tr>
-                            <th>风险维度</th>
-                            <th>评估</th>
-                            <th>说明</th>
-                        </tr>
-                        <tr>
-                            <td>版本兼容</td>
-                            <td><span class="risk-badge risk-medium">中风险</span></td>
-                            <td>Blender 会自动转换，但新版本设置可能丢失</td>
-                        </tr>
-                        <tr>
-                            <td>跨机识别</td>
-                            <td><span class="risk-badge risk-low">低风险</span></td>
-                            <td>所有 Blender 都能识别此文件</td>
-                        </tr>
-                        <tr>
-                            <td>快捷键</td>
-                            <td><span class="risk-badge risk-high">高风险</span></td>
-                            <td>不同版本快捷键系统可能重构（如 4.0 大改）</td>
-                        </tr>
+                        <tr><th>风险维度</th><th>评估</th><th>说明</th></tr>
+                        <tr><td>版本兼容</td><td><span class="risk-badge risk-medium">中风险</span></td><td>Blender 会自动转换，但新版本设置可能丢失</td></tr>
+                        <tr><td>跨机识别</td><td><span class="risk-badge risk-low">低风险</span></td><td>所有 Blender 都能识别此文件</td></tr>
+                        <tr><td>快捷键</td><td><span class="risk-badge risk-high">高风险</span></td><td>不同版本快捷键系统可能重构（如 4.0 大改）</td></tr>
+                    </table>
+                </div>
+            </div>
+
+            <!-- startup.blend -->
+            <div class="config-card required">
+                <div class="card-header">
+                    <span class="card-title">startup.blend</span>
+                    <span class="status-badge status-required">必须导出</span>
+                </div>
+                <div class="card-content">
+                    <div class="file-path">config/startup.blend</div>
+                    <p class="description">默认场景和界面布局模板</p>
+                    <ul class="content-list">
+                        <li><strong>默认场景</strong>：新建文件时的初始状态</li>
+                        <li><strong>界面布局</strong>：窗口分割、编辑器位置</li>
+                        <li><strong>默认对象</strong>：摄像机、灯光等初始设置</li>
+                    </ul>
+                </div>
+                <div class="risk-analysis">
+                    <table class="risk-table">
+                        <tr><th>风险维度</th><th>评估</th><th>说明</th></tr>
+                        <tr><td>版本兼容</td><td><span class="risk-badge risk-medium">中风险</span></td><td>场景数据格式相对稳定，但新功能可能丢失</td></tr>
+                        <tr><td>跨机识别</td><td><span class="risk-badge risk-low">低风险</span></td><td>所有 Blender 都能识别此文件</td></tr>
+                        <tr><td>与 userpref 区别</td><td><span class="risk-badge risk-low">低风险</span></td><td>独立文件，可单独替换不影响偏好</td></tr>
                     </table>
                 </div>
             </div>
@@ -451,26 +533,10 @@
                 </div>
                 <div class="risk-analysis">
                     <table class="risk-table">
-                        <tr>
-                            <th>风险维度</th>
-                            <th>评估</th>
-                            <th>说明</th>
-                        </tr>
-                        <tr>
-                            <td>版本兼容</td>
-                            <td><span class="risk-badge risk-high">高风险</span></td>
-                            <td>插件可能依赖特定 Blender API 版本</td>
-                        </tr>
-                        <tr>
-                            <td>跨机识别</td>
-                            <td><span class="risk-badge risk-low">低风险</span></td>
-                            <td>放入 addons 目录即可被识别</td>
-                        </tr>
-                        <tr>
-                            <td>API 变更</td>
-                            <td><span class="risk-badge risk-extreme">禁止</span></td>
-                            <td>某些插件在跨版本时会报错或崩溃</td>
-                        </tr>
+                        <tr><th>风险维度</th><th>评估</th><th>说明</th></tr>
+                        <tr><td>版本兼容</td><td><span class="risk-badge risk-high">高风险</span></td><td>插件可能依赖特定 Blender API 版本</td></tr>
+                        <tr><td>跨机识别</td><td><span class="risk-badge risk-low">低风险</span></td><td>放入 addons 目录即可被识别</td></tr>
+                        <tr><td>API 变更</td><td><span class="risk-badge risk-extreme">禁止</span></td><td>某些插件在跨版本时会报错或崩溃</td></tr>
                     </table>
                 </div>
             </div>
@@ -492,26 +558,10 @@
                 </div>
                 <div class="risk-analysis">
                     <table class="risk-table">
-                        <tr>
-                            <th>风险维度</th>
-                            <th>评估</th>
-                            <th>说明</th>
-                        </tr>
-                        <tr>
-                            <td>版本兼容</td>
-                            <td><span class="risk-badge risk-low">低风险</span></td>
-                            <td>纯文本文件，格式不变</td>
-                        </tr>
-                        <tr>
-                            <td>跨机识别</td>
-                            <td><span class="risk-badge risk-low">低风险</span></td>
-                            <td>直接读取，无依赖</td>
-                        </tr>
-                        <tr>
-                            <td>路径问题</td>
-                            <td><span class="risk-badge risk-medium">中风险</span></td>
-                            <td>绝对路径可能在新机器无效</td>
-                        </tr>
+                        <tr><th>风险维度</th><th>评估</th><th>说明</th></tr>
+                        <tr><td>版本兼容</td><td><span class="risk-badge risk-low">低风险</span></td><td>纯文本文件，格式不变</td></tr>
+                        <tr><td>跨机识别</td><td><span class="risk-badge risk-low">低风险</span></td><td>直接读取，无依赖</td></tr>
+                        <tr><td>路径问题</td><td><span class="risk-badge risk-medium">中风险</span></td><td>绝对路径可能在新机器无效</td></tr>
                     </table>
                 </div>
             </div>
@@ -533,31 +583,15 @@
                 </div>
                 <div class="risk-analysis">
                     <table class="risk-table">
-                        <tr>
-                            <th>风险维度</th>
-                            <th>评估</th>
-                            <th>说明</th>
-                        </tr>
-                        <tr>
-                            <td>版本兼容</td>
-                            <td><span class="risk-badge risk-medium">中风险</span></td>
-                            <td>新版本可能新增/删除参数，旧预设可能不完整</td>
-                        </tr>
-                        <tr>
-                            <td>跨机识别</td>
-                            <td><span class="risk-badge risk-low">低风险</span></td>
-                            <td>预设系统稳定，格式兼容</td>
-                        </tr>
-                        <tr>
-                            <td>功能变更</td>
-                            <td><span class="risk-badge risk-medium">中风险</span></td>
-                            <td>如渲染引擎重构，预设参数可能失效</td>
-                        </tr>
+                        <tr><th>风险维度</th><th>评估</th><th>说明</th></tr>
+                        <tr><td>版本兼容</td><td><span class="risk-badge risk-medium">中风险</span></td><td>新版本可能新增/删除参数，旧预设可能不完整</td></tr>
+                        <tr><td>跨机识别</td><td><span class="risk-badge risk-low">低风险</span></td><td>预设系统稳定，格式兼容</td></tr>
+                        <tr><td>功能变更</td><td><span class="risk-badge risk-medium">中风险</span></td><td>如渲染引擎重构，预设参数可能失效</td></tr>
                     </table>
                 </div>
             </div>
 
-            <!-- startup -->
+            <!-- startup scripts -->
             <div class="config-card risky">
                 <div class="card-header">
                     <span class="card-title">启动脚本 (startup)</span>
@@ -574,26 +608,10 @@
                 </div>
                 <div class="risk-analysis">
                     <table class="risk-table">
-                        <tr>
-                            <th>风险维度</th>
-                            <th>评估</th>
-                            <th>说明</th>
-                        </tr>
-                        <tr>
-                            <td>版本兼容</td>
-                            <td><span class="risk-badge risk-extreme">禁止</span></td>
-                            <td>API 变更可能导致脚本报错甚至崩溃</td>
-                        </tr>
-                        <tr>
-                            <td>跨机识别</td>
-                            <td><span class="risk-badge risk-low">低风险</span></td>
-                            <td>放入 startup 目录自动执行</td>
-                        </tr>
-                        <tr>
-                            <td>安全风险</td>
-                            <td><span class="risk-badge risk-high">高风险</span></td>
-                            <td>恶意脚本可能在启动时执行危险操作</td>
-                        </tr>
+                        <tr><th>风险维度</th><th>评估</th><th>说明</th></tr>
+                        <tr><td>版本兼容</td><td><span class="risk-badge risk-extreme">禁止</span></td><td>API 变更可能导致脚本报错甚至崩溃</td></tr>
+                        <tr><td>跨机识别</td><td><span class="risk-badge risk-low">低风险</span></td><td>放入 startup 目录自动执行</td></tr>
+                        <tr><td>安全风险</td><td><span class="risk-badge risk-high">高风险</span></td><td>恶意脚本可能在启动时执行危险操作</td></tr>
                     </table>
                 </div>
             </div>
@@ -615,26 +633,10 @@
                 </div>
                 <div class="risk-analysis">
                     <table class="risk-table">
-                        <tr>
-                            <th>风险维度</th>
-                            <th>评估</th>
-                            <th>说明</th>
-                        </tr>
-                        <tr>
-                            <td>版本兼容</td>
-                            <td><span class="risk-badge risk-medium">中风险</span></td>
-                            <td>笔刷等数据格式可能随版本演进</td>
-                        </tr>
-                        <tr>
-                            <td>跨机识别</td>
-                            <td><span class="risk-badge risk-low">低风险</span></td>
-                            <td>数据文件格式相对稳定</td>
-                        </tr>
-                        <tr>
-                            <td>路径依赖</td>
-                            <td><span class="risk-badge risk-medium">中风险</span></td>
-                            <td>资产库路径在新机器可能不存在</td>
-                        </tr>
+                        <tr><th>风险维度</th><th>评估</th><th>说明</th></tr>
+                        <tr><td>版本兼容</td><td><span class="risk-badge risk-medium">中风险</span></td><td>笔刷等数据格式可能随版本演进</td></tr>
+                        <tr><td>跨机识别</td><td><span class="risk-badge risk-low">低风险</span></td><td>数据文件格式相对稳定</td></tr>
+                        <tr><td>路径依赖</td><td><span class="risk-badge risk-medium">中风险</span></td><td>资产库路径在新机器可能不存在</td></tr>
                     </table>
                 </div>
             </div>
@@ -655,26 +657,10 @@
                 </div>
                 <div class="risk-analysis">
                     <table class="risk-table">
-                        <tr>
-                            <th>风险维度</th>
-                            <th>评估</th>
-                            <th>说明</th>
-                        </tr>
-                        <tr>
-                            <td>版本兼容</td>
-                            <td><span class="risk-badge risk-low">低风险</span></td>
-                            <td>灯光系统相对稳定</td>
-                        </tr>
-                        <tr>
-                            <td>跨机识别</td>
-                            <td><span class="risk-badge risk-low">低风险</span></td>
-                            <td>直接加载，无格式变更</td>
-                        </tr>
-                        <tr>
-                            <td>渲染引擎</td>
-                            <td><span class="risk-badge risk-medium">中风险</span></td>
-                            <td>Eevee/Cycles 更新可能影响灯光表现</td>
-                        </tr>
+                        <tr><th>风险维度</th><th>评估</th><th>说明</th></tr>
+                        <tr><td>版本兼容</td><td><span class="risk-badge risk-low">低风险</span></td><td>灯光系统相对稳定</td></tr>
+                        <tr><td>跨机识别</td><td><span class="risk-badge risk-low">低风险</span></td><td>直接加载，无格式变更</td></tr>
+                        <tr><td>渲染引擎</td><td><span class="risk-badge risk-medium">中风险</span></td><td>Eevee/Cycles 更新可能影响灯光表现</td></tr>
                     </table>
                 </div>
             </div>
@@ -696,26 +682,10 @@
                 </div>
                 <div class="risk-analysis">
                     <table class="risk-table">
-                        <tr>
-                            <th>风险维度</th>
-                            <th>评估</th>
-                            <th>说明</th>
-                        </tr>
-                        <tr>
-                            <td>版本兼容</td>
-                            <td><span class="risk-badge risk-extreme">禁止</span></td>
-                            <td>扩展系统仅在 4.5+ 存在，低版本完全无法识别</td>
-                        </tr>
-                        <tr>
-                            <td>跨机识别</td>
-                            <td><span class="risk-badge risk-low">低风险</span></td>
-                            <td>同版本（4.5+）可直接识别</td>
-                        </tr>
-                        <tr>
-                            <td>系统差异</td>
-                            <td><span class="risk-badge risk-high">高风险</span></td>
-                            <td>扩展平台可能因网络/区域限制而不同</td>
-                        </tr>
+                        <tr><th>风险维度</th><th>评估</th><th>说明</th></tr>
+                        <tr><td>版本兼容</td><td><span class="risk-badge risk-extreme">禁止</span></td><td>扩展系统仅在 4.5+ 存在，低版本完全无法识别</td></tr>
+                        <tr><td>跨机识别</td><td><span class="risk-badge risk-low">低风险</span></td><td>同版本（4.5+）可直接识别</td></tr>
+                        <tr><td>系统差异</td><td><span class="risk-badge risk-high">高风险</span></td><td>扩展平台可能因网络/区域限制而不同</td></tr>
                     </table>
                 </div>
             </div>
@@ -727,7 +697,6 @@
             <p>从 Blender X 版导出配置，导入到 Blender Y 版的风险评估</p>
 
             <div class="version-matrix">
-                <!-- 4.5 -->
                 <div class="version-cell">
                     <div class="version-label">导出自 4.5</div>
                     <div class="compat-grid">
@@ -737,8 +706,6 @@
                         <div class="compat-item compat-fail">→ 3.x ❌</div>
                     </div>
                 </div>
-
-                <!-- 4.4 -->
                 <div class="version-cell">
                     <div class="version-label">导出自 4.4</div>
                     <div class="compat-grid">
@@ -748,8 +715,6 @@
                         <div class="compat-item compat-fail">→ 3.x ❌</div>
                     </div>
                 </div>
-
-                <!-- 4.3 -->
                 <div class="version-cell">
                     <div class="version-label">导出自 4.3</div>
                     <div class="compat-grid">
@@ -759,8 +724,6 @@
                         <div class="compat-item compat-warn">→ 3.x ⚠</div>
                     </div>
                 </div>
-
-                <!-- 4.0 -->
                 <div class="version-cell">
                     <div class="version-label">导出自 4.0</div>
                     <div class="compat-grid">
@@ -770,8 +733,6 @@
                         <div class="compat-item compat-warn">→ 3.x ⚠</div>
                     </div>
                 </div>
-
-                <!-- 3.x -->
                 <div class="version-cell">
                     <div class="version-label">导出自 3.x</div>
                     <div class="compat-grid">
@@ -785,60 +746,19 @@
 
             <h3 style="margin-top: 30px; color: var(--accent);">风险详情说明</h3>
             <table class="risk-table">
-                <tr>
-                    <th>符号</th>
-                    <th>含义</th>
-                    <th>处理建议</th>
-                </tr>
-                <tr>
-                    <td><span class="compat-item compat-ok">✅</span></td>
-                    <td>完全兼容，可直接导入</td>
-                    <td>放心迁移，仅需重启 Blender</td>
-                </tr>
-                <tr>
-                    <td><span class="compat-item compat-warn">⚠</span></td>
-                    <td>部分兼容，有丢失风险</td>
-                    <td>导入后检查：快捷键、插件、新版本设置</td>
-                </tr>
-                <tr>
-                    <td><span class="compat-item compat-fail">❌</span></td>
-                    <td>不兼容，会出错或崩溃</td>
-                    <td>禁止迁移，重新配置或更新插件</td>
-                </tr>
+                <tr><th>符号</th><th>含义</th><th>处理建议</th></tr>
+                <tr><td><span class="compat-item compat-ok">✅</span></td><td>完全兼容，可直接导入</td><td>放心迁移，仅需重启 Blender</td></tr>
+                <tr><td><span class="compat-item compat-warn">⚠</span></td><td>部分兼容，有丢失风险</td><td>导入后检查：快捷键、插件、新版本设置</td></tr>
+                <tr><td><span class="compat-item compat-fail">❌</span></td><td>不兼容，会出错或崩溃</td><td>禁止迁移，重新配置或更新插件</td></tr>
             </table>
 
             <h3 style="margin-top: 30px; color: var(--warning);">重大版本变更风险点</h3>
             <table class="risk-table">
-                <tr>
-                    <th>版本</th>
-                    <th>重大变更</th>
-                    <th>影响配置</th>
-                    <th>风险</th>
-                </tr>
-                <tr>
-                    <td>4.0 → 4.1</td>
-                    <td>快捷键系统重构</td>
-                    <td>keymap</td>
-                    <td><span class="risk-badge risk-high">高风险</span></td>
-                </tr>
-                <tr>
-                    <td>3.x → 4.0</td>
-                    <td>节点系统大改、EEVEE 重构</td>
-                    <td>presets, datafiles</td>
-                    <td><span class="risk-badge risk-extreme">禁止</span></td>
-                </tr>
-                <tr>
-                    <td>4.4 → 4.5</td>
-                    <td>新增扩展系统 (extensions)</td>
-                    <td>extensions</td>
-                    <td><span class="risk-badge risk-medium">中风险</span></td>
-                </tr>
-                <tr>
-                    <td>2.x → 3.x</td>
-                    <td>工作区、节点重构</td>
-                    <td>userpref.blend</td>
-                    <td><span class="risk-badge risk-extreme">禁止</span></td>
-                </tr>
+                <tr><th>版本</th><th>重大变更</th><th>影响配置</th><th>风险</th></tr>
+                <tr><td>4.0 → 4.1</td><td>快捷键系统重构</td><td>keymap</td><td><span class="risk-badge risk-high">高风险</span></td></tr>
+                <tr><td>3.x → 4.0</td><td>节点系统大改、EEVEE 重构</td><td>presets, datafiles</td><td><span class="risk-badge risk-extreme">禁止</span></td></tr>
+                <tr><td>4.4 → 4.5</td><td>新增扩展系统 (extensions)</td><td>extensions</td><td><span class="risk-badge risk-medium">中风险</span></td></tr>
+                <tr><td>2.x → 3.x</td><td>工作区、节点重构</td><td>userpref.blend</td><td><span class="risk-badge risk-extreme">禁止</span></td></tr>
             </table>
         </section>
 
@@ -852,7 +772,7 @@
                 </div>
                 <div class="rec-item">
                     <div class="rec-title">升级迁移（谨慎）</div>
-                    <div class="rec-desc">导出 userpref.blend + config + presets。插件需逐个测试，startup 脚本需适配 API。</div>
+                    <div class="rec-desc">导出 userpref.blend + startup.blend + config + presets。插件需逐个测试，startup 脚本需适配 API。</div>
                 </div>
                 <div class="rec-item">
                     <div class="rec-title">降级迁移（不建议）</div>
@@ -865,7 +785,7 @@
             </div>
         </section>
 
-        <!-- 安全流程 -->
+        <!-- 安全导入流程 -->
         <section class="flow-section">
             <h2>🛡️ 安全导入流程</h2>
             <div class="flow-diagram">
@@ -901,10 +821,205 @@
             </div>
         </section>
 
+        <!-- FAQ 问答 -->
+        <section class="faq-section">
+            <h2>❓ 常见问题解答</h2>
+
+            <div class="faq-item">
+                <div class="faq-question">Q1: userpref.blend 和 startup.blend 有什么区别？</div>
+                <div class="faq-answer">
+                    <table class="risk-table">
+                        <tr><th>文件</th><th>内容</th><th>用途</th></tr>
+                        <tr><td>startup.blend</td><td>默认场景和界面布局</td><td>新建文件时的初始状态</td></tr>
+                        <tr><td>userpref.blend</td><td>用户偏好、插件状态、快捷键</td><td>全局配置</td></tr>
+                    </table>
+                    <p style="margin-top: 10px;">两个文件都在 Blender 启动时加载，startup.blend 定义初始场景，userpref.blend 定义全局偏好。</p>
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">Q2: 如何实现便携式/便携模式？</div>
+                <div class="faq-answer">
+                    在 Blender 可执行文件所在目录创建 <code style="color: var(--accent-light);">portable</code> 文件夹，Blender 会将所有配置、插件、预设保存在该文件夹中。
+                    <ul>
+                        <li>适合 U 盘携带或云同步</li>
+                        <li>配置与安装位置绑定，便于迁移</li>
+                        <li>结构：portable/4.5/config/、portable/4.5/scripts/</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">Q3: 插件启用状态存储在哪？</div>
+                <div class="faq-answer">
+                    插件启用状态存储在 userpref.blend 中。导入 userpref.blend 会自动恢复插件启用状态，但插件文件本身需要从 addons 目录还原。
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">Q4: 如何手动导出快捷键？</div>
+                <div class="faq-answer">
+                    <ul>
+                        <li>界面操作：Edit → Preferences → Keymap → Export</li>
+                        <li>保存为 .py 文件</li>
+                        <li>导入时使用同一位置的 Import 按钮</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">Q5: 版本升级时如何迁移插件？</div>
+                <div class="faq-answer">
+                    <ul>
+                        <li>安装新版本 Blender 时勾选 "Import Blender Preferences"</li>
+                        <li>手动复制 scripts/addons 目录到新版本</li>
+                        <li>检查插件是否兼容新版本 API</li>
+                        <li>主版本号变化（如 3.x → 4.x）可能导致插件不兼容</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">Q6: Python 如何保存用户偏好？</div>
+                <div class="faq-answer">
+                    <div class="code-block"><code>
+<span class="code-comment"># 方法 1: 使用 Operator（推荐）</span>
+<span class="code-function">bpy.ops.wm.save_userpref</span>()
+
+<span class="code-comment"># 方法 2: 设置自动保存标志</span>
+<span class="code-keyword">bpy</span>.context.preferences.use_preferences_save = <span class="code-keyword">True</span>
+
+<span class="code-comment"># 方法 3: 修改插件偏好后保存</span>
+addon_prefs = <span class="code-keyword">bpy</span>.context.preferences.addons[__package__].preferences
+addon_prefs.some_property = <span class="code-string">"new value"</span>
+<span class="code-function">bpy.ops.wm.save_userpref</span>()
+                    </code></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 多机同步方案 -->
+        <section class="sync-section">
+            <h2>🔄 多台电脑同步配置方案</h2>
+            <div class="sync-grid">
+                <div class="sync-item">
+                    <div class="sync-title">Blender Cloud Sync</div>
+                    <div class="sync-desc">使用官方 Blender Cloud 插件，自动同步 startup.blend 和 userpref.blend</div>
+                    <span class="sync-badge sync-paid">需订阅</span>
+                </div>
+                <div class="sync-item">
+                    <div class="sync-title">手动复制到云盘</div>
+                    <div class="sync-desc">复制 config 文件夹到 Dropbox/OneDrive/Google Drive，手动同步</div>
+                    <span class="sync-badge sync-free">免费</span>
+                </div>
+                <div class="sync-item">
+                    <div class="sync-title">Portable + 云同步</div>
+                    <div class="sync-desc">将 Blender portable 模式放在云同步目录中，实现便携同步</div>
+                    <span class="sync-badge sync-free">免费</span>
+                </div>
+                <div class="sync-item">
+                    <div class="sync-title">符号链接</div>
+                    <div class="sync-desc">将 config 目录用符号链接指向云同步位置，高级用户方案</div>
+                    <span class="sync-badge sync-advanced">高级</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Python API 参考 -->
+        <section class="api-section">
+            <h2>🐍 Python API 关键参考</h2>
+
+            <h3 style="color: var(--text-secondary); margin-bottom: 15px;">配置目录获取</h3>
+            <div class="code-block"><code>
+<span class="code-keyword">import</span> bpy
+<span class="code-keyword">from</span> pathlib <span class="code-keyword">import</span> Path
+
+<span class="code-comment"># 配置目录（userpref.blend、startup.blend 所在）</span>
+config_dir = Path(<span class="code-function">bpy.utils.user_resource</span>(<span class="code-string">'CONFIG'</span>))
+
+<span class="code-comment"># 脚本目录（addons/presets/startup 的父目录）</span>
+scripts_dir = Path(<span class="code-function">bpy.utils.user_resource</span>(<span class="code-string">'SCRIPTS'</span>))
+
+<span class="code-comment"># 数据文件目录（笔刷、贴图、资产）</span>
+datafiles_dir = Path(<span class="code-function">bpy.utils.user_resource</span>(<span class="code-string">'DATAFILES'</span>))
+
+<span class="code-comment"># 扩展目录（Blender 4.5+）</span>
+extensions_dir = Path(<span class="code-function">bpy.utils.user_resource</span>(<span class="code-string">'EXTENSIONS'</span>))
+
+<span class="code-comment"># 直接获取插件目录</span>
+addons_dir = Path(<span class="code-function">bpy.utils.user_resource</span>(<span class="code-string">'SCRIPTS'</span>, path=<span class="code-string">'addons'</span>))
+            </code></div>
+
+            <h3 style="color: var(--text-secondary); margin-bottom: 15px; margin-top: 20px;">偏好设置操作</h3>
+            <div class="code-block"><code>
+<span class="code-comment"># 保存用户偏好</span>
+<span class="code-function">bpy.ops.wm.save_userpref</span>()
+
+<span class="code-comment"># 获取偏好对象</span>
+prefs = <span class="code-keyword">bpy</span>.context.preferences
+
+<span class="code-comment"># 系统偏好</span>
+system_prefs = prefs.system
+
+<span class="code-comment"># 视图偏好</span>
+view_prefs = prefs.view
+view_prefs.ui_scale = <span class="code-string">1.2</span>  <span class="code-comment"># 设置界面缩放</span>
+
+<span class="code-comment"># 文件路径偏好</span>
+filepaths_prefs = prefs.filepaths
+
+<span class="code-comment"># 获取已启用的插件列表</span>
+enabled_addons = list(<span class="code-keyword">bpy</span>.context.preferences.addons.keys())
+            </code></div>
+        </section>
+
+        <!-- 参考资源 -->
+        <section class="resource-section">
+            <h2>📚 参考资源</h2>
+            <div class="resource-grid">
+                <div class="resource-card">
+                    <div class="resource-title">官方文档</div>
+                    <ul class="resource-list">
+                        <li><a href="https://docs.blender.org/manual/en/latest/advanced/blender_directory_layout.html" target="_blank">Blender Directory Layout</a></li>
+                        <li><a href="https://docs.blender.org/manual/en/latest/editors/preferences_editor.html" target="_blank">Preferences Editor</a></li>
+                        <li><a href="https://docs.blender.org/manual/en/latest/files/blend/compatibility.html" target="_blank">Compatibility</a></li>
+                        <li><a href="https://docs.blender.org/api/current/bpy.utils.html" target="_blank">Python API - bpy.utils</a></li>
+                        <li><a href="https://docs.blender.org/manual/en/latest/editors/preferences/addons.html" target="_blank">Add-ons Preferences</a></li>
+                    </ul>
+                </div>
+                <div class="resource-card">
+                    <div class="resource-title">社区问答精选</div>
+                    <ul class="resource-list">
+                        <li><a href="https://blender.stackexchange.com/questions/120944/how-can-you-sync-blender-configs-between-multiple-machines" target="_blank">多机同步配置方案</a></li>
+                        <li><a href="https://blender.stackexchange.com/questions/176101/backup-blender-addons-and-settings" target="_blank">备份插件和设置</a></li>
+                        <li><a href="https://blender.stackexchange.com/questions/320742/transferring-addons-across-blender-upgrades" target="_blank">跨版本迁移插件</a></li>
+                        <li><a href="https://blender.stackexchange.com/questions/266390/how-to-save-user-preferences-with-python" target="_blank">Python 保存偏好</a></li>
+                        <li><a href="https://blender.stackexchange.com/questions/147957/how-to-export-out-keymaps" target="_blank">导出快捷键</a></li>
+                    </ul>
+                </div>
+                <div class="resource-card">
+                    <div class="resource-title">视频教程</div>
+                    <ul class="resource-list">
+                        <li><a href="https://www.youtube.com/watch?v=PnzYZXbbjDk" target="_blank">Backup and Restore Blender Startup Settings</a></li>
+                        <li><a href="https://www.youtube.com/watch?v=ZyQJ7Nmcq8Q" target="_blank">Blender Addon Migration & File System Tips</a></li>
+                        <li><a href="https://www.youtube.com/watch?v=ebHrQrfrbOI" target="_blank">Update Blender to 4.4 and Migrate Settings</a></li>
+                    </ul>
+                </div>
+                <div class="resource-card">
+                    <div class="resource-title">工具与项目</div>
+                    <ul class="resource-list">
+                        <li><a href="https://github.com/CGCookie/blender-addon-updater" target="_blank">blender-addon-updater</a> - 插件自动更新模块</li>
+                        <li><a href="https://studio.blender.org/blog/introducing-blender-sync" target="_blank">Blender Sync</a> - Blender Cloud 配置同步服务</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
         <!-- 页脚 -->
         <footer class="footer">
-            <p>生成时间：2026-05-21 | 项目：MMY Blender Configure</p>
-            <p>参考来源：Blender 官方文档、社区实践、项目代码分析</p>
+            <p>更新时间：2026-05-22 | 项目：MMY Blender Configure</p>
+            <p>参考来源：Blender 官方文档、StackExchange、Reddit、社区实践、Tavily 搜索</p>
+            <p style="margin-top: 10px;">相关文档：<a href="Blender配置导出资料汇总.md">资料汇总.md</a> | <a href="Claude Code联网搜索能力配置备案.md">联网搜索备案.md</a></p>
         </footer>
     </div>
 </body>
