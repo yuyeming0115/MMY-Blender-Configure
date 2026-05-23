@@ -1,5 +1,18 @@
 import bpy
-from bpy.props import BoolProperty, StringProperty
+from bpy.props import BoolProperty, StringProperty, CollectionProperty
+
+
+class BookmarkItem(bpy.types.PropertyGroup):
+    """单个书签项"""
+    path: StringProperty(
+        name="路径",
+        description="书签保存的路径",
+        subtype='DIR_PATH'
+    )
+    name: StringProperty(
+        name="名称",
+        description="书签显示名称"
+    )
 
 
 class MMYConfigPreferences(bpy.types.AddonPreferences):
@@ -46,11 +59,25 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
         subtype='DIR_PATH',
         default=""
     )
+    bookmarks: CollectionProperty(
+        type=BookmarkItem,
+        name="路径书签",
+        description="收藏的备份路径列表"
+    )
+    bookmark_index: bpy.props.IntProperty(
+        name="当前书签索引",
+        default=0
+    )
+
+
+classes = (BookmarkItem, MMYConfigPreferences)
 
 
 def register():
-    bpy.utils.register_class(MMYConfigPreferences)
+    for cls in classes:
+        bpy.utils.register_class(cls)
 
 
 def unregister():
-    bpy.utils.unregister_class(MMYConfigPreferences)
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
