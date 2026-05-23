@@ -1,6 +1,74 @@
 import bpy
 from . import addon_timer
 from .utils import is_portable_mode, detect_path_dependencies
+from pathlib import Path
+
+
+class MMY_OT_AddBookmark(bpy.types.Operator):
+    """添加当前路径到书签"""
+    bl_idname = "mmy.add_bookmark"
+    bl_label = "添加书签"
+    bl_description = "将当前备份路径收藏到书签列表"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        prefs = context.preferences.addons[__package__].preferences
+        current_path = prefs.backup_path
+
+        if not current_path:
+            self.report({'WARNING'}, "请先设置备份路径")
+            return {'CANCELLED'}
+
+        # 检查是否已存在
+        for item in prefs.bookmarks:
+            if item.path == current_path:
+                self.report({'INFO'}, "此路径已在书签中")
+                return {'CANCELLED'}
+
+        # 添加新书签
+        new_bookmark = prefs.bookmarks.add()
+        new_bookmark.path = current_path
+        # 使用路径最后一级目录名作为默认名称
+        new_bookmark.name = Path(current_path).name or "书签"
+
+        self.report({'INFO'}, f"已添加书签: {new_bookmark.name}")
+        return {'FINISHED'}
+
+
+class MMY_OT_SelectBookmark(bpy.types.Operator):
+    """从书签中选择路径"""
+    bl_idname = "mmy.select_bookmark"
+    bl_label = "选择书签路径"
+    bl_description = "从收藏的书签中选择一个路径"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    bookmark_index: bpy.props.IntProperty()
+
+    def execute(self, context):
+        prefs = context.preferences.addons[__package__].preferences
+        if self.bookmark_index < len(prefs.bookmarks):
+            prefs.backup_path = prefs.bookmarks[self.bookmark_index].path
+            self.report({'INFO'}, f"已选择: {prefs.bookmarks[self.bookmark_index].name}")
+        return {'FINISHED'}
+
+
+class MMY_OT_RemoveBookmark(bpy.types.Operator):
+    """删除书签"""
+    bl_idname = "mmy.remove_bookmark"
+    bl_label = "删除书签"
+    bl_description = "从书签列表中删除此项"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    bookmark_index: bpy.props.IntProperty()
+
+    def execute(self, context):
+        prefs = context.preferences.addons[__package__].preferences
+        if self.bookmark_index < len(prefs.bookmarks):
+            prefs.bookmarks.remove(self.bookmark_index)
+            # 调整索引
+            if prefs.bookmark_index >= len(prefs.bookmarks):
+                prefs.bookmark_index = max(0, len(prefs.bookmarks) - 1)
+        return {'FINISHED'}
 
 
 class MMY_OT_SelectBackupPath(bpy.types.Operator):
@@ -119,11 +187,27 @@ class MMY_OT_OpenConfigPanel(bpy.types.Operator):
         row.label(text=f"配置路径: {config_path}", icon='FILE_FOLDER')
 
     def _draw_backup_path(self, layout, prefs):
-        """绘制备份路径设置区"""
+        """绘制备份路径设置区，含书签功能"""
         box = layout.box()
+
+        # 路径输入和按钮
         row = box.row(align=True)
         row.prop(prefs, "backup_path", text="备份保存位置")
-        row.operator("mmy.select_backup_path", text="", icon='FILE_FOLDER')
+        # 书签按钮（收藏当前路径）
+        row.operator("mmy.add_bookmark", text="", icon='BOOKMARKS')
+
+        # 书签列表
+        if prefs.bookmarks:
+            col = box.column(align=True)
+            col.label(text="收藏路径:", icon='BOOKMARKS')
+            for i, bookmark in enumerate(prefs.bookmarks):
+                row = col.row(align=True)
+                # 选择书签按钮
+                op = row.operator("mmy.select_bookmark", text=bookmark.name, icon='FILE_FOLDER')
+                op.bookmark_index = i
+                # 删除书签按钮
+                op = row.operator("mmy.remove_bookmark", text="", icon='X')
+                op.bookmark_index = i
 
     def _draw_usage_guide(self, layout):
         """绘制使用说明区"""
@@ -192,6 +276,9 @@ def draw_header_button(self, context):
 
 
 classes = (
+    MMY_OT_AddBookmark,
+    MMY_OT_SelectBookmark,
+    MMY_OT_RemoveBookmark,
     MMY_OT_SelectBackupPath,
     MMY_OT_ShowHelp,
     MMY_OT_OpenConfigPanel,
