@@ -124,7 +124,7 @@ class MMY_OT_ShowHelp(bpy.types.Operator):
 
         # 路径依赖说明
         box = layout.box()
-        box.label(text="路径依赖说明", icon='ERROR')
+        box.label(text="路径依赖说明", icon='WARNING')
         col = box.column(align=True)
         col.label(text="• 书签、资产库、最近文件等包含绝对路径")
         col.label(text="• 迁移到不同环境后，这些路径可能失效")
@@ -142,7 +142,7 @@ class MMY_OT_OpenConfigPanel(bpy.types.Operator):
         return {'FINISHED'}
 
     def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self, width=420)
+        return context.window_manager.invoke_props_dialog(self, width=480)
 
     def draw(self, context):
         layout = self.layout
@@ -231,12 +231,20 @@ class MMY_OT_OpenConfigPanel(bpy.types.Operator):
         box.prop(prefs, "include_prefs")
         box.prop(prefs, "include_addons")
 
-        # 用户配置 - 带路径依赖警告
+        # 用户配置项
         row = box.row()
         row.prop(prefs, "include_config")
+
+        # 路径依赖警告（更清晰的提示）
         if prefs.include_config and path_deps:
-            dep_text = "⚠ 检测到路径依赖: " + ", ".join(path_deps)
-            row.label(text=dep_text, icon='ERROR')
+            # 使用单独的 box 显示警告，而不是挤在一起
+            warning_box = box.box()
+            warning_row = warning_box.row()
+            warning_row.alert = True
+            warning_row.label(text="⚠ 路径依赖检测", icon='ERROR')
+            warning_col = warning_box.column(align=True)
+            warning_col.label(text=f"检测到: {', '.join(path_deps)}")
+            warning_col.label(text="迁移后这些路径可能失效，需手动检查")
 
         box.prop(prefs, "include_presets")
         box.prop(prefs, "include_startup")
