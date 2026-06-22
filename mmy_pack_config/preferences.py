@@ -47,6 +47,14 @@ def _fmt_time(elapsed):
 class MMYConfigPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
+    # ---------- 打包路径记忆 ----------
+    last_portable_path: bpy.props.StringProperty(
+        name="上次 Portable 路径",
+        description="上次打包时选择的 portable 文件夹（自动记录）",
+        subtype='DIR_PATH',
+        default="",
+    )
+
     # ---------- 打包输出路径 ----------
     pack_output_path: bpy.props.StringProperty(
         name="打包输出目录",
@@ -70,6 +78,7 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
         box = layout.box()
         box.label(text="打包设置", icon='FILE_FOLDER')
         col = box.column(align=True)
+        col.prop(self, "last_portable_path")
         col.prop(self, "pack_output_path")
 
         # ========== 区块2：插件加载耗时（双列彩虹色）==========

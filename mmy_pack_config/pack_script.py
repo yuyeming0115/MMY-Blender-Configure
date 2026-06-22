@@ -1,374 +1,332 @@
 #!/usr/bin/env python3
 """
-MMY Blender Configure 打包脚本 - 重构版
-打包 Blender portable/ 配置文件夹，支持动态路径选择、自动版本检测、时间戳命名
+MMY Blender Configure — 打包脚本（库模式）
+
+支持两种运行方式：
+  1. 命令行带参数（推荐，从无 tkinter 环境调用）：
+       python pack_script.py <portable_path> [output_path]
+  2. 命令行无参数（tkinter 交互模式，需要 tkinter）：
+       python pack_script.py
+
+作为库调用：
+   from .pack_script import pack_portable
+   pack_portable(portable_path, output_path)
 """
 
 import json
-import os
 import re
 import sys
 import zipfile
 from pathlib import Path
 from datetime import datetime
 
-import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog
+
+CONFIG_FILE = Path(__file__).parent.parent / ".pack_config.json"
 
 
-CONFIG_FILE = Path(__file__).parent / ".pack_config.json"
-
-
-# ============ 配置文件管理 ============
+# ============================================================
+# 配置文件
+# ============================================================
 
 def load_config():
-    """加载配置文件，如果不存在则返回默认值"""
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
-            print(f"警告：无法读取配置文件，使用默认配置。错误：{e}")
-    
+            print(f"[MMY] 警告：无法读取配置文件：{e}")
     return {
         "last_portable_path": "",
-        "last_output_dir": str(Path(__file__).parent / "releases")
+        "last_output_dir": str(Path(__file__).parent.parent / "releases"),
     }
 
 
 def save_config(config):
-    """保存配置到文件"""
     try:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
     except Exception as e:
-        print(f"警告：无法保存配置文件。错误：{e}")
+        print(f"[MMY] 警告：无法保存配置文件：{e}")
 
 
-# ============ 版本检测 ============
+# ============================================================
+# 版本检测
+# ============================================================
 
-def get_blender_version(portable_path):
-    """
-    自动检测 Blender 版本号（三层方案）
-    
-    返回：版本字符串（如 "4.5.0"），如果检测失败则返回 None
-    """
+def get_blender_version(portable_path, version_override=None):
+    if version_override:
+        v = version_override
+        if v.count(".") == 1:
+            v += ".0"
+        return v
+
     portable_path = Path(portable_path)
-    
-    # 方法1：从父目录名称提取版本（如 "Blender 4.5/portable/"）
     parent_name = portable_path.parent.name
-    version_match = re.search(r'(\d+\.\d+(\.\d+)?)', parent_name)
-    if version_match:
-        version = version_match.group(1)
-        # 确保是 3 段版本号（如 4.5 → 4.5.0）
-        if version.count('.') == 1:
-            version += ".0"
-        return version
-    
-    # 方法2：检查 portable/ 下的版本命名子目录（如 portable/4.5/）
+    m = re.search(r"(\d+\.\d+(\.\d+)?)", parent_name)
+    if m:
+        v = m.group(1)
+        if v.count(".") == 1:
+            v += ".0"
+        return v
+
     try:
         for item in portable_path.iterdir():
-            if item.is_dir() and re.match(r'\d+\.\d+', item.name):
-                version = item.name
-                if version.count('.') == 1:
-                    version += ".0"
-                return version
+            if item.is_dir() and re.match(r"\d+\.\d+", item.name):
+                v = item.name
+                if v.count(".") == 1:
+                    v += ".0"
+                return v
     except Exception:
         pass
-    
-    # 方法3：无法检测，返回 None（让调用者处理）
+
     return None
 
 
-def ask_user_for_version():
-    """弹出对话框让用户输入版本号"""
+# ============================================================
+# 文件排除
+# ============================================================
+
+EXCLUDE_PATTERNS = [
+    "__pycache__",
+    "*.pyc",
+    "*.pyo",
+    ".git",
+    "*.log",
+    "*.tmp",
+    "thumbs.db",
+    "._.ds_store",
+    ".ds_store",
+]
+
+
+def should_exclude(file_path):
+    file_path_str = str(file_path).replace("\\", "/")
+    file_name = file_path.name
+    for pattern in EXCLUDE_PATTERNS:
+        if pattern in file_path.parts:
+            return True
+        if pattern.startswith("*"):
+            if file_name.endswith(pattern[1:]):
+                return True
+        if file_name == pattern or pattern in file_path_str:
+            return True
+    return False
+
+
+# ============================================================
+# 打包核心
+# ============================================================
+
+def pack_portable(portable_path, output_path):
+    """
+    打包整个 Blender portable/ 文件夹。
+
+    Args:
+        portable_path: portable 文件夹路径（str 或 Path）
+        output_path: 输出的 zip 文件路径（str 或 Path）
+
+    Returns:
+        output_path 的 Path 对象
+
+    Raises:
+        FileNotFoundError: portable 文件夹不存在
+    """
+    portable_path = Path(portable_path)
+    output_path = Path(output_path)
+
+    if not portable_path.exists():
+        raise FileNotFoundError(f"portable 文件夹不存在：{portable_path}")
+
+    if not output_path.parent.exists():
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    total_files = sum(1 for _ in portable_path.rglob("*") if _.is_file())
+    packed_files = 0
+
+    print(f"[MMY] 开始打包 {portable_path}")
+    print(f"[MMY] 总文件数：{total_files}")
+    print(f"[MMY] 输出到：{output_path}")
+
+    with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file_path in portable_path.rglob("*"):
+            if not file_path.is_file():
+                continue
+            if should_exclude(file_path):
+                continue
+
+            arcname = file_path.relative_to(portable_path.parent)
+            arcname_str = str(arcname).replace("\\", "/")
+            zf.write(file_path, arcname_str)
+            packed_files += 1
+
+            if packed_files % 500 == 0:
+                print(f"[MMY]   已打包 {packed_files}/{total_files}...")
+
+    size_mb = output_path.stat().st_size / 1024 / 1024
+    print(f"[MMY] ✅ 打包完成！")
+    print(f"[MMY]   文件：{output_path}")
+    print(f"[MMY]   大小：{size_mb:.2f} MB")
+    print(f"[MMY]   数量：{packed_files}/{total_files}")
+    return output_path
+
+
+# ============================================================
+# 自动重命名
+# ============================================================
+
+def get_unique_output_path(output_path):
+    path = Path(output_path)
+    if not path.exists():
+        return output_path
+    counter = 1
+    while True:
+        new_name = f"{path.stem} ({counter}){path.suffix}"
+        new_path = path.parent / new_name
+        if not new_path.exists():
+            return str(new_path)
+        counter += 1
+
+
+# ============================================================
+# tkinter 交互模式（仅当无命令行参数时调用）
+# ============================================================
+
+def _run_tkinter_ui():
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, simpledialog
+
+    config = load_config()
+
+    # 1. 选择 portable 文件夹
     root = tk.Tk()
     root.withdraw()
-    
-    version = simpledialog.askstring(
-        title="输入 Blender 版本",
-        prompt="无法自动检测 Blender 版本号。\n请手动输入（如 4.5.0）："
-    )
-    
-    root.destroy()
-    
-    if version:
-        # 验证格式
-        if re.match(r'\d+\.\d+(\.\d+)?', version):
-            if version.count('.') == 1:
-                version += ".0"
-            return version
-    
-    return "unknown"
 
-
-# ============ 路径选择 ============
-
-def select_portable_folder(config):
-    """
-    弹出文件夹选择对话框，让用户选择 Blender portable/ 文件夹
-    
-    返回：选择的文件夹路径，如果取消则返回 None
-    """
-    root = tk.Tk()
-    root.withdraw()
-    
-    initial_dir = config.get("last_portable_path", "")
-    if not initial_dir or not Path(initial_dir).exists():
-        initial_dir = str(Path.home())
-    
-    folder_path = filedialog.askdirectory(
+    initial_dir = config.get("last_portable_path", str(Path.home()))
+    portable_path = filedialog.askdirectory(
         title="选择 Blender portable 文件夹",
-        initialdir=initial_dir
+        initialdir=initial_dir,
     )
-    
-    root.destroy()
-    
-    if folder_path:
-        # 保存到配置
-        config["last_portable_path"] = folder_path
-        save_config(config)
-        return folder_path
-    
-    return None
+    if not portable_path:
+        print("已取消。")
+        sys.exit(0)
 
+    config["last_portable_path"] = portable_path
+    save_config(config)
 
-def select_output_path(config, default_name):
-    """
-    弹出保存文件对话框，让用户选择 zip 输出路径
-    
-    返回：选择的文件路径，如果取消则返回 None
-    """
-    root = tk.Tk()
-    root.withdraw()
-    
-    initial_dir = config.get("last_output_dir", str(Path(__file__).parent / "releases"))
-    if not Path(initial_dir).exists():
-        initial_dir = str(Path.home())
-    
+    # 2. 检测版本号
+    version = get_blender_version(portable_path)
+    if not version:
+        root.deiconify()
+        version = simpledialog.askstring(
+            title="输入 Blender 版本",
+            prompt="无法自动检测版本号，请手动输入（如 4.5.0）：",
+        )
+        root.withdraw()
+        if version:
+            if version.count(".") == 1:
+                version += ".0"
+        else:
+            version = "unknown"
+
+    # 3. 生成输出文件名
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    default_name = f"Blender_Portable_v{version}_{timestamp}.zip"
+
+    initial_dir = config.get("last_output_dir", str(Path.home()))
     output_path = filedialog.asksaveasfilename(
         title="保存 ZIP 文件",
         initialdir=initial_dir,
         initialfile=default_name,
         defaultextension=".zip",
-        filetypes=[("ZIP 文件", "*.zip"), ("所有文件", "*.*")]
+        filetypes=[("ZIP 文件", "*.zip")],
     )
-    
-    root.destroy()
-    
-    if output_path:
-        # 保存到配置
-        config["last_output_dir"] = str(Path(output_path).parent)
-        save_config(config)
-        return output_path
-    
-    return None
+    if not output_path:
+        print("已取消。")
+        sys.exit(0)
+
+    config["last_output_dir"] = str(Path(output_path).parent)
+    save_config(config)
+
+    # 4. 自动重命名
+    output_path = get_unique_output_path(output_path)
+
+    # 5. 执行打包
+    try:
+        result = pack_portable(portable_path, output_path)
+        messagebox.showinfo("打包完成", f"输出文件：\n{result}")
+        print(f"[MMY] 结果：{result}")
+    except Exception as e:
+        messagebox.showerror("打包失败", str(e))
+        print(f"[MMY] 错误：{e}")
+        sys.exit(1)
 
 
-# ============ 文件排除逻辑 ============
-
-def should_exclude(file_path, exclude_patterns):
-    """
-    检查文件是否应该被排除
-    
-    Args:
-        file_path: Path 对象
-        exclude_patterns: 排除模式列表（如 ["__pycache__", "*.pyc"]）
-    
-    返回：如果应该排除则返回 True，否则返回 False
-    """
-    file_path_str = str(file_path).replace("\\", "/")
-    file_name = file_path.name
-    
-    for pattern in exclude_patterns:
-        # 如果是目录名模式（如 "__pycache__"）
-        if pattern in file_path.parts:
-            return True
-        
-        # 如果是通配符模式（如 "*.pyc"）
-        if pattern.startswith("*"):
-            if file_name.endswith(pattern[1:]):
-                return True
-        
-        # 如果是精确匹配（如 ".git"）
-        if file_name == pattern or pattern in file_path_str:
-            return True
-    
-    return False
-
-
-# ============ 自动重命名 ============
-
-def get_unique_output_path(output_path):
-    """
-    如果文件已存在，自动重命名（如 file (1).zip, file (2).zip）
-    
-    返回：唯一的文件路径
-    """
-    path = Path(output_path)
-    
-    if not path.exists():
-        return output_path
-    
-    counter = 1
-    while True:
-        new_name = f"{path.stem} ({counter}){path.suffix}"
-        new_path = path.parent / new_name
-        
-        if not new_path.exists():
-            return str(new_path)
-        
-        counter += 1
-
-
-# ============ 打包逻辑 ============
-
-def pack_portable(portable_path, output_path):
-    """
-    打包整个 Blender portable/ 文件夹
-    
-    Args:
-        portable_path: portable 文件夹路径
-        output_path: 输出的 zip 文件路径
-    
-    返回：输出的 zip 文件路径
-    """
-    portable_path = Path(portable_path)
-    
-    if not portable_path.exists():
-        raise FileNotFoundError(f"portable 文件夹不存在：{portable_path}")
-    
-    # 排除规则
-    exclude_patterns = [
-        "__pycache__",    # Python 缓存
-        "*.pyc",          # Python 编译文件
-        "*.pyo",
-        ".git",           # Git 仓库
-        "*.log",          # 日志文件
-        "*.tmp",          # 临时文件
-        "thumbs.db",      # Windows 缩略图缓存
-        ".ds_store"       # macOS 元数据
-    ]
-    
-    # 统计信息
-    total_files = 0
-    packed_files = 0
-    
-    # 先统计总文件数（用于进度显示）
-    for file_path in portable_path.rglob("*"):
-        if file_path.is_file():
-            total_files += 1
-    
-    print(f"开始打包 {portable_path}")
-    print(f"总文件数：{total_files}")
-    print(f"输出到：{output_path}\n")
-    
-    # 打包
-    with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for file_path in portable_path.rglob("*"):
-            if file_path.is_file():
-                # 检查是否应该排除
-                if should_exclude(file_path, exclude_patterns):
-                    continue
-                
-                # 计算相对路径（保留目录结构）
-                arcname = file_path.relative_to(portable_path.parent)
-                arcname_str = str(arcname).replace("\\", "/")
-                
-                # 写入 zip
-                zf.write(file_path, arcname_str)
-                packed_files += 1
-                
-                # 进度显示（每 100 个文件显示一次）
-                if packed_files % 100 == 0:
-                    print(f"  已打包 {packed_files}/{total_files} 文件...")
-    
-    # 完成信息
-    output_size = Path(output_path).stat().st_size / 1024 / 1024  # MB
-    print(f"\n✅ 打包完成！")
-    print(f"  输出文件：{output_path}")
-    print(f"  文件大小：{output_size:.2f} MB")
-    print(f"  打包文件数：{packed_files}/{total_files}")
-    
-    return output_path
-
-
-# ============ 主函数 ============
+# ============================================================
+# 命令行入口
+# ============================================================
 
 def main():
-    """主函数"""
     print("=" * 60)
-    print("MMY Blender Configure - Portable 打包工具")
-    print("=" * 60 + "\n")
-    
-    # 加载配置
-    config = load_config()
-    
-    # 1. 选择 portable 文件夹
-    print("[1/4] 选择 Blender portable 文件夹...")
-    portable_path = select_portable_folder(config)
-    
-    if not portable_path:
-        print("❌ 已取消选择。")
-        sys.exit(0)
-    
-    print(f"  已选择：{portable_path}\n")
-    
-    # 2. 检测 Blender 版本号
-    print("[2/4] 检测 Blender 版本号...")
-    blender_version = get_blender_version(portable_path)
-    
-    if not blender_version:
-        print("  ⚠️  无法自动检测版本号，需要手动输入...")
-        blender_version = ask_user_for_version()
-    
-    print(f"  版本号：{blender_version}\n")
-    
-    # 3. 生成输出文件名
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    default_name = f"Blender_Portable_v{blender_version}_{timestamp}.zip"
-    print(f"[3/4] 生成输出文件名：{default_name}\n")
-    
-    # 4. 选择输出路径
-    print("[4/4] 选择输出路径...")
-    output_path = select_output_path(config, default_name)
-    
-    if not output_path:
-        print("❌ 已取消选择。")
-        sys.exit(0)
-    
-    print(f"  输出到：{output_path}\n")
-    
-    # 5. 检查文件是否存在，自动重命名
-    output_path = get_unique_output_path(output_path)
-    if output_path != Path(output_path).parent / default_name:
-        print(f"⚠️  文件已存在，自动重命名为：{Path(output_path).name}\n")
-    
-    # 6. 执行打包
-    try:
-        pack_portable(portable_path, output_path)
-    except Exception as e:
-        print(f"\n❌ 打包失败：{e}")
-        messagebox.showerror("打包失败", str(e))
-        sys.exit(1)
-    
-    # 7. 完成
-    messagebox.showinfo("打包完成", f"打包成功！\n\n输出文件：{output_path}")
-    
-    print("\n" + "=" * 60)
-    print("打包任务完成！")
+    print("MMY Blender Configure — Portable 打包工具")
     print("=" * 60)
+
+    if len(sys.argv) >= 2:
+        # ---- 命令行参数模式（无 tkinter 依赖）----
+        portable_path = sys.argv[1]
+        output_path = sys.argv[2] if len(sys.argv) >= 3 else None
+        version_override = None
+        for i, arg in enumerate(sys.argv):
+            if arg == "--version" and i + 1 < len(sys.argv):
+                version_override = sys.argv[i + 1]
+
+        if not Path(portable_path).exists():
+            print(f"[MMY] ❌ portable 文件夹不存在：{portable_path}")
+            sys.exit(1)
+
+        # 检测/使用版本号
+        version = get_blender_version(portable_path, version_override)
+        if not version:
+            print("[MMY] ⚠️  无法检测版本号，使用 'unknown'")
+            version = "unknown"
+
+        # 生成输出路径
+        if not output_path:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+            default_name = f"Blender_Portable_v{version}_{timestamp}.zip"
+            config = load_config()
+            out_dir = config.get("last_output_dir", ".")
+            output_path = str(Path(out_dir) / default_name)
+
+        output_path = get_unique_output_path(output_path)
+
+        # 执行打包
+        try:
+            result = pack_portable(portable_path, output_path)
+            print(f"[MMY] ✅ 结果：{result}")
+        except Exception as e:
+            print(f"[MMY] ❌ 错误：{e}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+    else:
+        # ---- 无参数：tkinter 交互模式 ----
+        try:
+            _run_tkinter_ui()
+        except Exception as e:
+            print(f"[MMY] ❌ tkinter 模式失败（可能未安装 tkinter）：{e}")
+            print("[MMY] 请使用命令行参数模式：")
+            print("  python pack_script.py <portable路径> [输出路径]")
+            sys.exit(1)
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n\n⚠️  已取消打包。")
+        print("\n[MMY] 已取消。")
         sys.exit(0)
     except Exception as e:
-        print(f"\n\n❌ 发生错误：{e}")
+        print(f"\n[MMY] ❌ 发生错误：{e}")
         import traceback
         traceback.print_exc()
-        messagebox.showerror("错误", str(e))
         sys.exit(1)
