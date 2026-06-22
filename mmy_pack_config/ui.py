@@ -3,6 +3,11 @@ MMY Blender Configure — 顶部菜单栏 UI
 
 在 Blender 顶部菜单栏最左侧添加「打包导出」按钮。
 符合 AGENTS.md 规范：文件操作类功能挂载在顶部 Header。
+
+路径查找策略（多级回退）：
+  1. 用户在偏好设置中配置的路径
+  2. 从 __file__ 向上搜索父目录，找 pack.py
+  3. 兜底：弹出文件选择对话框让用户选择
 """
 
 import bpy
@@ -12,6 +17,44 @@ import os
 from pathlib import Path
 
 
+def _find_pack_script():
+    """
+    多级策略查找 pack.py 路径：
+    
+    策略 1：从 __file__ 向上搜索（最多 6 层）
+      addons/mmy_pack_config/ui.py → addons/ → scripts/ → portable/ → Blender5.1/ → ...
+      
+    策略 2：检查常见开发目录
+      
+    返回：Path 对象或 None
+    """
+    # --- 策略 1：向上搜索 ---
+    current = Path(__file__).resolve().parent
+    for _ in range(8):  # 最多向上搜 8 层
+        candidate = current / "pack.py"
+        if candidate.exists():
+            print(f"[MMY] 找到 pack.py: {candidate}")
+            return candidate
+        parent = current.parent
+        if parent == current:  # 到达根目录
+            break
+        current = parent
+
+    # --- 策略 2：常见开发目录 ---
+    home = Path.home()
+    candidates = [
+        home / "GitWork" / "MMY-Blender-Configure" / "pack.py",
+        home / "Desktop" / "MMY-Blender-Configure" / "pack.py",
+        home / "Documents" / "MMY-Blender-Configure" / "pack.py",
+    ]
+    for c in candidates:
+        if c.exists():
+            print(f"[MMY] 找到 pack.py (常用目录): {c}")
+            return c
+
+    return None
+
+
 class MMY_OT_PackPortable(bpy.types.Operator):
     """打包导出 Blender Portable 配置文件夹为 ZIP"""
     bl_idname = "mmy.pack_portable"
@@ -19,54 +62,65 @@ class MMY_OT_PackPortable(bpy.types.Operator):
     bl_description = "运行 pack.py，选择 portable 文件夹并导出为 ZIP"
     bl_options = {"REGISTER"}
 
+    filepath: bpy.props.StringProperty(
+        name="pack.py 路径",
+        description="如果自动找不到 pack.py，请手动选择",
+        subtype='FILE_PATH',
+        default="",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
     def execute(self, context):
-        # 找到 pack.py 的路径（项目根目录）
-        pack_script = Path(__file__).parent.parent / "pack.py"
+        pack_script = Path(self.filepath) if self.filepath else _find_pack_script()
 
-        if not pack_script.exists():
-            self.report({"ERROR"}, f"找不到 pack.py: {pack_script}")
-            return {"CANCELLED"}
+        if not pack_script or not pack_script.exists():
+            # 兜底：让用户选择 pack.py 文件
+            self.report({"ERROR"}, "找不到 pack.py。请在插件偏好设置中配置路径，或确保项目目录可访问")
+            # 打开文件浏览器让用户选择
+            context.window_manager.fileselect_add(self.properties)
+            return {'CANCELLED'} if not hasattr(bpy.context, 'window') else {'RUNNING_MODAL'}
 
-        # 使用当前 Python 解释器运行 pack.py（独立进程）
         python_exe = sys.executable
 
         try:
-            # 在独立进程中运行 pack.py（不阻塞 Blender）
             subprocess.Popen(
                 [python_exe, str(pack_script)],
                 cwd=str(pack_script.parent),
                 creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0,
             )
-            self.report({"INFO"}, "已启动打包工具，请查看弹出的窗口")
+            self.report({"INFO"}, f"已启动: {pack_script}")
         except Exception as e:
             self.report({"ERROR"}, f"启动失败: {e}")
             return {"CANCELLED"}
 
         return {"FINISHED"}
 
+    def invoke(self, context, event):
+        """首次调用时尝试找 pack.py，找不到则弹出选择对话框"""
+        pack_script = _find_pack_script()
+
+        if pack_script and pack_script.exists():
+            self.filepath = str(pack_script)
+            return self.execute(context)
+
+        # 找不到，弹出文件选择
+        context.window_manager.fileselect_add(self.properties)
+        return {'RUNNING_MODAL'}
+
 
 # ============================================================
-# 注册到顶部菜单栏（最左侧，Blender logo 旁边）
+# 注册到顶部菜单栏
 # ============================================================
 
 def draw_pack_button(self, context):
-    """在 TOPBAR_MT_editor_menus（编辑菜单区域）左侧绘制按钮"""
     layout = self.layout
     row = layout.row(align=True)
-    row.scale_x = 0.8
-    row.operator(
-        "mmy.pack_portable",
-        text="",
-        icon="PACKAGE",
-    )
+    row.scale_x = 0.85
+    op = row.operator("mmy.pack_portable", text="打包导出", icon="PACKAGE")
 
 
 def register():
-    # 注册操作符
     bpy.utils.register_class(MMY_OT_PackPortable)
-
-    # 挂载到顶部菜单栏最左侧（在文件菜单之前）
-    # TOPBAR_MT_editor_menus 是包含 文件/编辑/渲染 等菜单的区域
     try:
         bpy.types.TOPBAR_MT_editor_menus.append(draw_pack_button)
     except Exception as e:
@@ -74,11 +128,11 @@ def register():
 
 
 def unregister():
-    # 移除按钮
     try:
         bpy.types.TOPBAR_MT_editor_menus.remove(draw_pack_button)
     except Exception:
         pass
-
-    # 注销操作符
-    bpy.utils.unregister_class(MMY_OT_PackPortable)
+    try:
+        bpy.utils.unregister_class(MMY_OT_PackPortable)
+    except Exception:
+        pass

@@ -5,7 +5,7 @@ from .addon_timer import manager
 
 
 # ============================================================
-# 偏好设置面板：耗时监控显示 + 打包输出路径设置
+# 偏好设置面板：耗时监控显示 + 打包输出路径设置 + pack.py 路径配置
 # ============================================================
 
 class MMYConfigPreferences(bpy.types.AddonPreferences):
@@ -20,98 +20,139 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
         update=lambda self, ctx: _on_pack_output_path_changed(self),
     )
 
+    # ---------- pack.py 路径（用于菜单栏按钮） ----------
+    pack_script_path: bpy.props.StringProperty(
+        name="pack.py 路径",
+        description="pack.py 的完整路径。留空则自动搜索（向上查找或使用常用目录）",
+        subtype='FILE_PATH',
+        default="",
+    )
+
+    # ---------- 展开控制（UI 状态，不保存到文件） ----------
+    show_early_addons: bpy.props.BoolProperty(
+        name="显示早期加载的插件列表",
+        description="展开查看所有早期加载插件的详细列表（默认折叠以节省空间）",
+        default=False,
+    )
+
     # ---------- 绘制面板 ----------
     def draw(self, context):
         layout = self.layout
 
-        # --- 区块1：打包输出路径 ---
+        # ========== 区块1：打包设置 ==========
         box = layout.box()
         box.label(text="打包设置", icon='FILE_FOLDER')
-        box.prop(self, "pack_output_path")
+        col = box.column(align=True)
+        col.prop(self, "pack_script_path")
+        col.prop(self, "pack_output_path")
 
-        # --- 区块2：插件加载耗时监控 ---
+        # ========== 区块2：插件加载耗时监控 ==========
         box = layout.box()
         box.label(text="插件加载耗时", icon='TIME')
 
         records = manager.get_records()
 
         if not records:
-            # 无数据时的提示
-            col = box.column()
-            col.label(text="暂无监控数据", icon='INFO')
-            col.label(text="重启 Blender 或重新启用此插件后可开始监控", icon='BLANK1')
-
-            # 尝试从历史文件加载
-            if manager.load_data():
-                records = manager.get_records()
-                if records:
-                    box.separator()
-                    box.label(text="已加载上一次的监控数据:", icon='MEMORY')
-                else:
-                    return
-            else:
+            # 无数据时尝试加载历史
+            loaded = manager.load_data()
+            if not loaded:
+                row = box.row()
+                row.label(text="暂无数据", icon='INFO')
+                row.label(text="重启 Blender 或重新启用此插件后可开始监控", icon='BLANK1')
                 return
+            records = manager.get_records()
 
-        # 表头
-        row = box.row()
-        row.label(text="插件名称", icon='PLUGIN')
-        row.label(text="耗时")
-        row.label(text="状态")
+        # ---- 分类统计 ----
+        timed = [r for r in records if r.elapsed > 0]
+        early = [r for r in records if r.elapsed == 0 and not r.error]
+        errors_list = [r for r in records if r.error]
 
-        # 按耗时排序，显示前 30 个（0.0s 的排后面）
-        sorted_records = sorted(
-            records,
-            key=lambda r: (r.elapsed == 0.0, -r.elapsed),
-        )[:30]
+        # ---- 统计摘要行 ----
+        summary_row = box.row(align=True)
+        _draw_stat(summary_row, f"总计 {len(records)} 个", 'INFO')
+        _draw_stat(summary_row, f"已计时 {len(timed)} 个", 'CHECKMARK' if timed else 'BLANK1')
+        _draw_stat(summary_row, f"早期加载 {len(early)} 个", 'TIME')
+        if errors_list:
+            summary_row.alert = True
+            _draw_stat(summary_row, f"异常 {len(errors_list)} 个", 'ERROR')
+            summary_row.alert = False
 
-        for rec in sorted_records:
-            row = box.row()
-            # 截断过长的名称
-            name = rec.name.replace("addon_utils: ", "")[:40]
-            row.label(text=name)
+        # ---- 有计时数据的插件（重点展示）----
+        if timed:
+            box.separator(factor=0.3)
+            box.label(text="已计时插件（按耗时排序）:", icon='SORTSIZE')
 
-            # 耗时显示
-            if rec.elapsed > 0:
-                elapsed_str = f"{rec.elapsed:.3f}s"
-            else:
-                elapsed_str = "—"
+            sorted_timed = sorted(timed, key=lambda r: -r.elapsed)
+            for rec in sorted_timed[:15]:  # 最多显示 15 个有计时的
+                self._draw_record_row(box, rec)
 
-            # 状态判断
-            if rec.error:
-                row.alert = True
-                row.label(text=elapsed_str, icon='ERROR')
-                row.alert = True
-                row.label(text="异常", icon='CANCEL')
-            elif rec.elapsed == 0:
-                row.label(text=elapsed_str, icon='TIME')
-                row.label(text="早期加载", icon='INFO')
-            elif rec.elapsed > 1.0:
-                row.alert = True
-                row.label(text=elapsed_str, icon='ERROR')
-                row.alert = False
-                row.label(text="慢", icon='SORTTIME')
-            elif rec.elapsed > 0.2:
-                row.label(text=elapsed_str, icon='TIME')
-                row.label(text="较慢", icon='SORTTIME')
-            else:
-                row.label(text=elapsed_str, icon='CHECKMARK')
-                row.label(text="正常", icon='CHECKMARK')
+            if len(sorted_timed) > 15:
+                box.label(text=f"... 还有 {len(sorted_timed) - 15} 个", icon='BLANK1')
 
-        # 统计信息
-        box.separator()
-        total = len(records)
-        timed = sum(1 for r in records if r.elapsed > 0)
-        errors = sum(1 for r in records if r.error)
-        avg_time = (
-            sum(r.elapsed for r in records if r.elapsed > 0) / timed
-            if timed > 0 else 0
-        )
+        # ---- 异常插件 ----
+        if errors_list:
+            box.separator(factor=0.3)
+            box.label(text="异常插件:", icon='ERROR', icon_color=(1, 0.3, 0.2))
+            for rec in errors_list[:5]:
+                self._draw_error_row(box, rec)
 
-        info_text = (
-            f"总计 {total} 个 | 已计时 {timed} 个 | "
-            f"平均 {avg_time:.3f}s | 异常 {errors} 个"
-        )
-        box.label(text=info_text)
+        # ---- 早期加载的插件（默认折叠）----
+        if early:
+            box.separator(factor=0.3)
+            row = box.row(align=True)
+            row.prop(self, "show_early_addons", text="", icon='DISCLOSURE_TRI_RIGHT' if not self.show_early_addons else 'DISCLOSURE_TRI_DOWN', emboss=False)
+
+            # 早期插件摘要行（始终显示）
+            early_names = [r.name.replace("addon_utils: ", "") for r in early]
+            row.label(text=f"{len(early)} 个早期加载的插件（注入前已完成加载）", icon='INFO')
+
+            if len(early) <= 8 and not self.show_early_addons:
+                # 少量时直接显示名字，不用展开
+                names_str = ", ".join(early_names[:8])
+                if len(early) > 8:
+                    names_str += "..."
+                sub = box.column()
+                sub.label(text=names_str, icon='BLANK1')
+
+            elif self.show_early_addons:
+                # 展开时显示完整列表（紧凑格式）
+                sub = box.column(align=True)
+                for i, rec in enumerate(early):
+                    name = rec.name.replace("addon_utils: ", "")[:45]
+                    sub.label(text=f"  {name}")
+
+    @staticmethod
+    def _draw_record_row(box, rec):
+        """绘制一条有计时数据的记录"""
+        row = box.row(align=True)
+        name = rec.name.replace("addon_utils: ", "")[:38]
+
+        row.label(text=name)
+
+        # 根据耗时着色
+        if rec.elapsed > 1.0:
+            row.alert = True
+            row.label(text=f"{rec.elapsed:.2f}s", icon='ERROR')
+            row.alert = False
+        elif rec.elapsed > 0.3:
+            row.label(text=f"{rec.elapsed:.2f}s", icon='SORTTIME')
+        else:
+            row.label(text=f"{rec.elapsed:.3f}s", icon='CHECKMARK')
+
+    @staticmethod
+    def _draw_error_row(box, rec):
+        """绘制异常记录"""
+        row = box.row(align=True)
+        name = rec.name.replace("addon_utils: ", "")[:35]
+        row.alert = True
+        row.label(text=name, icon='CANCEL')
+        row.label(text=rec.error.split("\n")[-1][:30] if rec.error else "Error", icon='ERROR')
+        row.alert = False
+
+
+def _draw_stat(row, text, icon):
+    """辅助：绘制统计标签"""
+    row.label(text=text, icon=icon)
 
 
 # ============================================================
