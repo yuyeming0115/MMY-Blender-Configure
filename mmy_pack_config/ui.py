@@ -96,6 +96,11 @@ class MMY_OT_PackPortable(bpy.types.Operator):
         name="版本号（可选）",
         default="",
     )
+    exclude_cache: bpy.props.BoolProperty(
+        name="排除缓存/临时文件",
+        description="排除 __pycache__、*.pyc、.git、*.log 等文件（建议勾选，ZIP 更小）",
+        default=True,
+    )
 
     def invoke(self, context, event):
         prefs = context.preferences.addons.get(__package__)
@@ -109,6 +114,7 @@ class MMY_OT_PackPortable(bpy.types.Operator):
         layout.prop(self, "portable_path")
         layout.prop(self, "output_dir")
         layout.prop(self, "version_override")
+        layout.prop(self, "exclude_cache")
         layout.label(text="文件名自动生成：Blender_Portable_v{版本}_{时间}.zip",
                      icon='INFO')
 
@@ -163,6 +169,9 @@ class MMY_OT_PackPortable(bpy.types.Operator):
         ]
         if self.version_override.strip():
             args.extend(["--version", self.version_override.strip()])
+        if not self.exclude_cache:
+            args.append("--all")
+            print(f"[MMY] 使用 --all 模式（不排除任何文件）")
 
         try:
             subprocess.Popen(

@@ -86,30 +86,61 @@ def get_blender_version(portable_path, version_override=None):
 # ============================================================
 
 EXCLUDE_PATTERNS = [
-    "__pycache__",
-    "*.pyc",
-    "*.pyo",
-    ".git",
-    "*.log",
-    "*.tmp",
-    "thumbs.db",
-    "._.ds_store",
-    ".ds_store",
+    "__pycache__",      # Python 缓存目录
+    "*.pyc",           # Python 编译文件
+    "*.pyo",           # Python 优化编译文件
+    ".git",             # Git 仓库元数据
+    "*.log",            # 日志文件
+    "*.tmp",            # 临时文件
+    "thumbs.db",        # Windows 缩略图缓存
+    "._*",              # macOS 资源派生文件
+    ".ds_store",        # macOS Finder 元数据
 ]
 
+# 用于统计排除原因
+_EXCLUDE_DESCRIPTION = {
+    "__pycache__":  "Python 缓存目录",
+    "*.pyc":        "Python 编译文件 (.pyc)",
+    "*.pyo":        "Python 优化编译文件 (.pyo)",
+    ".git":          "Git 仓库元数据",
+    "*.log":         "日志文件 (.log)",
+    "*.tmp":         "临时文件 (.tmp)",
+    "thumbs.db":     "Windows 缩略图缓存",
+    "._*":           "macOS 资源派生文件",
+    ".ds_store":     "macOS Finder 元数据",
+}
 
-def should_exclude(file_path):
+
+def should_exclude(file_path, exclude_patterns=None):
+    """
+    检查文件是否应被排除。
+
+    返回：(是否排除, 排除原因描述) 的元组。
+    不排除时返回 (False, None)。
+    """
+    if exclude_patterns is None:
+        exclude_patterns = EXCLUDE_PATTERNS
+
     file_path_str = str(file_path).replace("\\", "/")
     file_name = file_path.name
-    for pattern in EXCLUDE_PATTERNS:
+
+    import fnmatch
+
+    for pattern in exclude_patterns:
+        # 1) 目录名精确匹配（如 __pycache__ 出现在路径任一层）
         if pattern in file_path.parts:
-            return True
-        if pattern.startswith("*"):
-            if file_name.endswith(pattern[1:]):
-                return True
+            return True, _EXCLUDE_DESCRIPTION.get(pattern, pattern)
+
+        # 2) 通配符文件模式（如 *.pyc、._*）
+        if "*" in pattern:
+            if fnmatch.fnmatch(file_name, pattern):
+                return True, _EXCLUDE_DESCRIPTION.get(pattern, pattern)
+
+        # 3) 精确文件名匹配（如 .ds_store、.git）
         if file_name == pattern or pattern in file_path_str:
-            return True
-    return False
+            return True, _EXCLUDE_DESCRIPTION.get(pattern, pattern)
+
+    return False, None
 
 
 # ============================================================
@@ -174,14 +205,16 @@ def get_unique_output_path(output_path):
 # 打包核心（快速模式：STORED 不压缩）
 # ============================================================
 
-def pack_portable(portable_path, output_path, compress=False):
+def pack_portable(portable_path, output_path, compress=False, exclude_patterns=None):
     """
     打包整个 Blender portable/ 文件夹。
 
     Args:
-        portable_path: portable 文件夹路径
-        output_path:   输出的 zip 文件路径
-        compress:      是否启用 ZIP_DEFLATED 压缩（默认关闭，速度快 5-10x）
+        portable_path:     portable 文件夹路径
+        output_path:    输出的 zip 文件路径
+        compress:         是否启用 ZIP_DEFLATED 压缩（默认关闭，速度快 5-10x）
+        exclude_patterns: 排除模式列表。None 时使用默认 EXCLUDE_PATTERNS；
+                           传 [] 或 --all 则不排除任何文件
     Returns:
         output_path 的 Path 对象
     Raises:
@@ -193,13 +226,19 @@ def pack_portable(portable_path, output_path, compress=False):
     if not portable_path.exists():
         raise FileNotFoundError(f"portable 文件夹不存在：{portable_path}")
 
+    # 确定排除规则
+    if exclude_patterns is None:
+        exclude_patterns = EXCLUDE_PATTERNS
+    use_exclude = len(exclude_patterns) > 0
+
     # 确保输出目录存在
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # 统计文件数
+    # 统计
     total_files = sum(1 for _ in portable_path.rglob("*") if _.is_file())
     packed_files = 0
     skipped_files = 0
+    exclude_reasons = {}   # {原因描述: 计数}
 
     compression = zipfile.ZIP_DEFLATED if compress else zipfile.ZIP_STORED
     mode_label = "压缩" if compress else "存储（快速）"
@@ -208,14 +247,21 @@ def pack_portable(portable_path, output_path, compress=False):
     print(f"[MMY] 总文件数：{total_files}")
     print(f"[MMY] 输出到：{output_path}")
     print(f"[MMY] 模式：{mode_label}")
+    if use_exclude:
+        print(f"[MMY] 排除规则：{len(exclude_patterns)} 类")
+    else:
+        print(f"[MMY] 排除规则：无（--all 模式，包含所有文件）")
 
     with zipfile.ZipFile(output_path, "w", compression) as zf:
         for file_path in portable_path.rglob("*"):
             if not file_path.is_file():
                 continue
-            if should_exclude(file_path):
-                skipped_files += 1
-                continue
+            if use_exclude:
+                excluded, reason = should_exclude(file_path, exclude_patterns)
+                if excluded:
+                    skipped_files += 1
+                    exclude_reasons[reason] = exclude_reasons.get(reason, 0) + 1
+                    continue
 
             arcname = file_path.relative_to(portable_path.parent)
             arcname_str = str(arcname).replace("\\", "/")
@@ -227,10 +273,20 @@ def pack_portable(portable_path, output_path, compress=False):
                 print(f"[MMY]   进度：{packed_files}/{total_files} ({pct}%)...")
 
     size_mb = output_path.stat().st_size / 1024 / 1024
-    print(f"\n[MMY] ✅ 打包完成！")
+
+    # ---- 打印排除摘要 ----
+    print()
+    if exclude_reasons:
+        print(f"[MMY] 排除摘要（共 {skipped_files} 个文件）：")
+        for reason, count in sorted(exclude_reasons.items(), key=lambda x: -x[1]):
+            print(f"[MMY]   - {reason}：{count} 个")
+    else:
+        print(f"[MMY] （无排除文件）")
+
+    print(f"[MMY] ✅ 打包完成！")
     print(f"[MMY]   文件：{output_path.name}")
     print(f"[MMY]   大小：{size_mb:.1f} MB")
-    print(f"[MB]   数量：已打包 {packed_files} + 已跳过 {skipped_files} = 总计 {total_files}")
+    print(f"[MMY]   已打包：{packed_files}  已跳过：{skipped_files}  总计：{total_files}")
     return output_path
 
 
@@ -312,6 +368,7 @@ def main():
         raw_output = sys.argv[2] if len(sys.argv) >= 3 else None
         version_override = None
         use_compress = "--compress" in sys.argv
+        use_all = "--all" in sys.argv       # 不排除任何文件
 
         for i, arg in enumerate(sys.argv):
             if arg == "--version" and i + 1 < len(sys.argv):
@@ -326,12 +383,17 @@ def main():
             print("[MMY] ⚠️  无法检测版本号，使用 'unknown'")
             version = "unknown"
 
-        # 关键：规范化输出路径
+        # 规范化输出路径
         output_path = normalize_output_path(raw_output, portable_path, version)
         output_path = get_unique_output_path(output_path)
 
+        # 确定排除规则
+        exclude_patterns = [] if use_all else None
+
         try:
-            result = pack_portable(portable_path, output_path, compress=use_compress)
+            result = pack_portable(portable_path, output_path,
+                                 compress=use_compress,
+                                 exclude_patterns=exclude_patterns)
             print(f"\n[MMY] ✅ 结果：{result}")
         except Exception as e:
             print(f"[MMY] ❌ 错误：{e}")
