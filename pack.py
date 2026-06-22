@@ -114,7 +114,7 @@ def pack_addon():
             zf.write(file_path, arcname_str)
     
     size_mb = output_path.stat().st_size / 1024 / 1024
-    print(f"[MMY] ✅ 打包完成！")
+    print(f"[MMY] [OK] 打包完成！")
     print(f"[MMY]   文件：{output_path}")
     print(f"[MMY]   大小：{size_mb:.1f} MB")
     print(f"[MMY]   插件包可拖入 Blender 偏好设置 → 插件 → 安装...")
@@ -134,7 +134,7 @@ EXCLUDE_PATTERNS = [
     "*.tmp",           # 临时文件
     "thumbs.db",       # Windows 缩略图缓存
     "._*",             # macOS 资源派生文件
-    ".ds_store",        # macOS Finder 元数据
+    ".ds_store",       # macOS Finder 元数据
 ]
 
 _EXCLUDE_DESCRIPTION = {
@@ -190,11 +190,16 @@ def should_exclude(file_path, exclude_patterns=None):
     import fnmatch
     
     for pattern in exclude_patterns:
+        # 1) 目录名精确匹配（如 __pycache__ 出现在路径任一层）
         if pattern in file_path.parts:
             return True, _EXCLUDE_DESCRIPTION.get(pattern, pattern)
+        
+        # 2) 通配符文件模式（如 *.pyc、._*）
         if "*" in pattern:
             if fnmatch.fnmatch(file_name, pattern):
                 return True, _EXCLUDE_DESCRIPTION.get(pattern, pattern)
+        
+        # 3) 精确文件名匹配（如 .ds_store、.git）
         if file_name == pattern or pattern in file_path_str:
             return True, _EXCLUDE_DESCRIPTION.get(pattern, pattern)
     
@@ -213,6 +218,7 @@ def normalize_output_path(output_path, portable_path=None, version=None):
     
     p = Path(output_path)
     
+    # 如果看起来是目录（以 \ 或 / 结尾，或已存在且是目录）
     if p.is_dir() or (not p.suffix and not p.name.endswith(".zip")):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         ver = version or "unknown"
@@ -220,9 +226,11 @@ def normalize_output_path(output_path, portable_path=None, version=None):
         default_name = f"Blender_Portable_v{ver}_{timestamp}.zip"
         return str(base_dir / default_name)
     
+    # 有后缀但不是 .zip
     if p.suffix.lower() != ".zip":
         return str(p.with_suffix(".zip"))
     
+    # 正常的 .zip 文件路径
     return output_path
 
 
@@ -266,7 +274,7 @@ def pack_portable(portable_path, output_path, compress=False, exclude_patterns=N
     total_files = sum(1 for _ in portable_path.rglob("*") if _.is_file())
     packed_files = 0
     skipped_files = 0
-    exclude_reasons = {}
+    exclude_reasons = {}   # {原因描述: 计数}
     
     compression = zipfile.ZIP_DEFLATED if compress else zipfile.ZIP_STORED
     mode_label = "压缩" if compress else "存储（快速）"
@@ -310,7 +318,7 @@ def pack_portable(portable_path, output_path, compress=False, exclude_patterns=N
     else:
         print(f"[MMY] （无排除文件）")
     
-    print(f"[MMY] ✅ 打包完成！")
+    print(f"[MMY] [OK] 打包完成！")
     print(f"[MMY]   文件：{output_path.name}")
     print(f"[MMY]   大小：{size_mb:.1f} MB")
     print(f"[MMY]   已打包：{packed_files}  已跳过：{skipped_files}  总计：{total_files}")
@@ -323,7 +331,7 @@ def _run_tkinter_ui():
         import tkinter as tk
         from tkinter import filedialog, messagebox, simpledialog
     except ImportError:
-        print("[MMY] ❌ 当前环境无 tkinter，请使用命令行模式：")
+        print("[MMY] [ERROR] 当前环境无 tkinter，请使用命令行模式：")
         print("       python pack.py <portable_path> [output_path]")
         sys.exit(1)
     
@@ -412,12 +420,12 @@ def main():
                 version_override = sys.argv[i + 1]
         
         if not Path(portable_path).exists():
-            print(f"[MMY] ❌ portable 文件夹不存在：{portable_path}")
+            print(f"[MMY] [ERROR] portable 文件夹不存在：{portable_path}")
             sys.exit(1)
         
         version = get_blender_version(portable_path, version_override)
         if not version:
-            print("[MMY] ⚠️  无法检测版本号，使用 'unknown'")
+            print("[MMY] [WARN] 无法检测版本号，使用 'unknown'")
             version = "unknown"
         
         output_path = normalize_output_path(raw_output, portable_path, version)
@@ -429,9 +437,9 @@ def main():
             result = pack_portable(portable_path, output_path,
                                  compress=use_compress,
                                  exclude_patterns=exclude_patterns)
-            print(f"\n[MMY] ✅ 结果：{result}")
+            print(f"\n[MMY] [OK] 结果：{result}")
         except Exception as e:
-            print(f"\n[MMY] ❌ 错误：{e}")
+            print(f"\n[MMY] [ERROR] 错误：{e}")
             import traceback
             traceback.print_exc()
             sys.exit(1)
@@ -446,7 +454,7 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except Exception as e:
-        print(f"\n[MMY] ❌ 发生错误：{e}")
+        print(f"\n[MMY] [ERROR] 发生错误：{e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
