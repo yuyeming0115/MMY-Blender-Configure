@@ -3,8 +3,7 @@ MMY Blender Configure — 偏好设置面板
 
 功能：
   1. 打包输出路径设置（同步到 .pack_config.json）
-  2. pack.py 路径配置（供菜单栏按钮使用）
-  3. 插件加载耗时监控（天梯条形图展示）
+  2. 插件加载耗时监控（双列彩虹色展示）
 """
 
 import bpy
@@ -14,11 +13,35 @@ from .addon_timer import manager
 
 
 # ============================================================
-# 常量：条形图参数
+# 彩虹色时间标签：根据耗时返回 (图标, 是否alert)
 # ============================================================
-BAR_WIDTH = 18          # 条形最大字符宽度
-BAR_FULL = "\u2588"      # █ 实心块
-BAR_EMPTY = "\u2591"     # ░ 浅色块（或用空格）
+
+def _time_tier(elapsed):
+    """耗时分级 → (icon, alert, label)"""
+    if elapsed <= 0:
+        return "BLANK1", False, "--"
+    elif elapsed < 0.05:
+        return "CHECKMARK", False, "极速"
+    elif elapsed < 0.15:
+        return "CHECKMARK", None, "快"          # None = 不设 alert，正常显示
+    elif elapsed < 0.4:
+        return "SORTTIME", None, "较慢"
+    elif elapsed < 1.0:
+        return "ERROR", True, "慢"
+    else:
+        return "CANCEL", True, "很慢"
+
+
+def _fmt_time(elapsed):
+    """格式化耗时字符串"""
+    if elapsed <= 0:
+        return "--"
+    elif elapsed >= 1.0:
+        return f"{elapsed:.2f}s"
+    elif elapsed >= 0.01:
+        return f"{elapsed:.3f}s"
+    else:
+        return f"{elapsed:.4f}s"
 
 
 class MMYConfigPreferences(bpy.types.AddonPreferences):
@@ -27,18 +50,10 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
     # ---------- 打包输出路径 ----------
     pack_output_path: bpy.props.StringProperty(
         name="打包输出目录",
-        description="pack.py 打包时的默认输出目录。留空则每次手动选择",
+        description="打包时的默认输出目录。留空则每次手动选择",
         subtype='DIR_PATH',
         default="",
         update=lambda self, ctx: _on_pack_output_path_changed(self),
-    )
-
-    # ---------- pack.py 路径 ----------
-    pack_script_path: bpy.props.StringProperty(
-        name="pack.py 路径",
-        description="菜单栏「打包导出」按钮使用的脚本路径。留空则自动搜索",
-        subtype='FILE_PATH',
-        default="",
     )
 
     # ---------- 展开控制 ----------
@@ -55,15 +70,14 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
         box = layout.box()
         box.label(text="打包设置", icon='FILE_FOLDER')
         col = box.column(align=True)
-        col.prop(self, "pack_script_path")
         col.prop(self, "pack_output_path")
 
-        # ========== 区块2：插件加载耗时天梯图 ==========
+        # ========== 区块2：插件加载耗时（双列彩虹色）==========
         self._draw_timer_panel(layout)
 
-    # ---- 耗时监控面板 ----
+    # ---- 耗时监控面板（双列彩虹色） ----
     def _draw_timer_panel(self, layout):
-        """绘制天梯图风格的耗时监控面板"""
+        """双列布局 + 彩虹色表示耗时长短"""
         box = layout.box()
         box.label(text="插件加载耗时", icon='TIME')
 
@@ -83,130 +97,101 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
         early = [r for r in records if r.elapsed == 0 and not r.error]
         errors_list = [r for r in records if r.error]
 
-        max_elapsed = max(r.elapsed for r in timed) if timed else 1.0
-
-        # ---- 统计摘要行（3 列自适应）----
+        # ---- 统计摘要行 ----
         row = box.row(align=True)
-        _draw_stat_chip(row, f"总计 {len(records)}", 'INFO', (0.15, 0.15, 0.17))
-        _draw_stat_chip(row, f"计时 {len(timed)}", 'CHECKMARK' if timed else 'BLANK1', (0.12, 0.35, 0.14))
+        _chip(row, f"总计 {len(records)}", 'INFO')
+        _chip(row, f"计时 {len(timed)}", 'CHECKMARK' if timed else 'BLANK1')
         if errors_list:
             row.alert = True
-            _draw_stat_chip(row, f"异常 {len(errors_list)}", 'ERROR', (0.85, 0.20, 0.18))
+            _chip(row, f"异常 {len(errors_list)}", 'ERROR')
             row.alert = False
 
-        # ---- 有计时数据的天梯图 ----
+        # ---- 有计时数据：双列彩虹色 ----
         if timed:
-            box.separator(factor=0.4)
+            box.separator(factor=0.3)
             sorted_timed = sorted(timed, key=lambda r: -r.elapsed)
-            display_count = min(len(sorted_timed), 25)
 
-            for i, rec in enumerate(sorted_timed[:display_count]):
-                self._draw_bar_row(box, rec, max_elapsed, rank=i + 1)
+            split = box.split(factor=0.5)
+            col_left = split.column(align=True)
+            col_right = split.column(align=True)
 
-            if len(sorted_timed) > display_count:
+            for i, rec in enumerate(sorted_timed[:30]):
+                target = col_left if i % 2 == 0 else col_right
+                self._draw_rainbow_cell(target, rec, rank=i + 1)
+
+            if len(sorted_timed) > 30:
                 sub = box.column()
-                sub.label(
-                    text=f"... 还有 {len(sorted_timed) - display_count} 个已计时插件",
-                    icon='BLANK1'
-                )
+                sub.label(text=f"... 还有 {len(sorted_timed) - 30} 个", icon='BLANK1')
 
         # ---- 异常插件 ----
         if errors_list:
-            box.separator(factor=0.4)
+            box.separator(factor=0.3)
             box.label(text="异常插件:", icon='ERROR')
             for rec in errors_list[:5]:
-                self._draw_error_bar_row(box, rec)
+                self._draw_error_cell(box, rec)
 
-        # ---- 早期加载的插件（折叠摘要）----
+        # ---- 早期加载（折叠）----
         if early:
-            box.separator(factor=0.4)
-            header_row = box.row(align=True)
-            header_row.prop(self, "show_early_addons", text="", icon='DISCLOSURE_TRI_RIGHT' if not self.show_early_addons else 'DISCLOSURE_TRI_DOWN', emboss=False)
-            header_row.label(
-                text=f"{len(early)} 个早期加载（注入前已完成，无耗时数据）",
-                icon='INFO'
-            )
+            box.separator(factor=0.3)
+            hdr = box.row(align=True)
+            hdr.prop(self, "show_early_addons", text="",
+                     icon='DISCLOSURE_TRI_RIGHT' if not self.show_early_addons else 'DISCLOSURE_TRI_DOWN',
+                     emboss=False)
+            hdr.label(text=f"{len(early)} 个早期加载（注入前已完成）", icon='INFO')
 
-            if self.show_early_addons or len(early) <= 10:
-                # 少量或展开时显示名字网格
-                sub = box.column(align=True)
+            if self.show_early_addons or len(early) <= 12:
                 names = [r.name.replace("addon_utils: ", "") for r in early]
-                # 按每行 3 个排列
-                for i in range(0, len(names), 3):
-                    line_names = names[i:i + 3]
-                    line_text = "  |  ".join(line_names)
-                    sub.label(text=line_text, icon='BLANK1')
+                split = box.split(factor=0.5)
+                cA, cB = split.column(align=True), split.column(align=True)
+                for i, n in enumerate(names):
+                    (cA if i % 2 == 0 else cB).label(text=n, icon='DOT')
 
     @staticmethod
-    def _draw_bar_row(box, rec, max_elapsed, rank=0):
+    def _draw_rainbow_cell(col, rec, rank=0):
         """
-        绘制一条天梯条形行：
-          排名  插件名          [████████░░░░░░]  耗时
+        单个单元格：图标 | 名称(截断) | 耗时 | 状态标识
+        彩虹色通过 icon + alert 组合表达：
+           🟢 极速/快 → CHECKMARK
+           🟡 较慢   → SORTTIME
+           🔴 慢     → ERROR (alert红)
+           🔴 很慢   → CANCEL  (alert红)
         """
-        name = rec.name.replace("addon_utils: ", "")[:30]
+        name = rec.name.replace("addon_utils: ", "")[:22]
+        icon, alert, tier_label = _time_tier(rec.elapsed)
+        time_str = _fmt_time(rec.elapsed)
 
-        # 计算条形长度
-        ratio = min(rec.elapsed / max_elapsed, 1.0) if max_elapsed > 0 else 0
-        filled = int(ratio * BAR_WIDTH)
-        empty = BAR_WIDTH - filled
-        bar = BAR_FULL * filled + ("." * empty)  # 用 . 作为空白部分更轻量
+        row = col.row(align=True)
 
-        # 格式化耗时
-        if rec.elapsed >= 1.0:
-            time_str = f"{rec.elapsed:.2f}s"
-        elif rec.elapsed >= 0.01:
-            time_str = f"{rec.elapsed:.3f}s"
-        else:
-            time_str = f"{rec.elapsed:.4f}s"
+        # 时间数字作为主要视觉指标（alert 让慢的变红）
+        if alert:
+            row.alert = True
+        row.label(text=time_str, icon=icon)
+        if alert:
+            row.alert = False
 
-        # 绘制行
-        row = box.row(align=True)
-
-        # 排名号
-        rank_str = f"{rank:>2}" if rank else "  "
-        row.label(text=rank_str, icon='BLANK1')
-
-        # 插件名（固定宽度区域，避免列错位）
+        # 名称
         row.label(text=name, icon='BLANK1')
 
-        # 条形图 + 耗时数字
-        row.label(text=f"[{bar}]  {time_str}", icon='BLANK1')
-
-        # 状态图标（根据耗时着色）
-        if rec.error:
-            row.alert = True
-            row.label(text="", icon='CANCEL')
-            row.alert = False
-        elif rec.elapsed > 1.0:
-            row.alert = True
-            row.label(text="", icon='ERROR')
-            row.alert = False
-        elif rec.elapsed > 0.3:
-            row.label(text="", icon='SORTTIME')
-        else:
-            row.label(text="", icon='CHECKMARK')
-
     @staticmethod
-    def _draw_error_bar_row(box, rec):
-        """绘制异常记录行"""
-        name = rec.name.replace("addon_utils: ", "")[:35]
-        err_msg = rec.error.split("\n")[-1][:40] if rec.error else "Error"
+    def _draw_error_cell(col, rec):
+        """异常记录行"""
+        name = rec.name.replace("addon_utils: ", "")[:28]
+        err_msg = rec.error.split("\n")[-1][:35] if rec.error else "Error"
 
-        row = box.row(align=True)
+        row = col.row(align=True)
         row.alert = True
         row.label(text=name, icon='CANCEL')
-        row.label(text=f"[!!! ERROR !!!]", icon='ERROR')
-        row.label(text=err_msg, icon='BLANK1')
+        row.label(text=err_msg, icon='ERROR')
         row.alert = False
 
 
-def _draw_stat_chip(row, text, icon, color_hint=None):
-    """辅助：绘制统计标签芯片"""
+def _chip(row, text, icon):
+    """辅助：绘制统计标签"""
     row.label(text=text, icon=icon)
 
 
 # ============================================================
-# 当 pack_output_path 变化时，同步写入 .pack_config.json
+# pack_output_path 变化时同步写入 .pack_config.json
 # ============================================================
 def _on_pack_output_path_changed(self):
     config_path = Path(__file__).parent.parent / ".pack_config.json"
