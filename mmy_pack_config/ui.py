@@ -9,11 +9,65 @@ import bpy
 import subprocess
 import sys
 import os
+import re
 from pathlib import Path
 from datetime import datetime
 
 
 _PACK_SCRIPT = Path(__file__).parent / "pack_script.py"
+
+
+# ============================================================
+# 辅助：生成标准文件名
+# ============================================================
+
+def _build_default_filename(portable_path_str, version_override=""):
+    """生成标准输出文件名：Blender_Portable_v{版本}_{时间戳}.zip"""
+    version = version_override.strip() if version_override else ""
+    if not version:
+        portable_path = Path(portable_path_str)
+        parent_name = portable_path.parent.name
+        m = re.search(r"(\d+\.\d+(\.\d+)?)", parent_name)
+        if m:
+            version = m.group(1)
+            if version.count(".") == 1:
+                version += ".0"
+        else:
+            version = "unknown"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    return f"Blender_Portable_v{version}_{timestamp}.zip"
+
+
+def _resolve_output_path(raw_output, portable_path_str):
+    """
+    将用户输入的输出路径规范化为 .zip 文件路径。
+
+    规则：
+      空/留空     → 自动生成到配置的目录（默认桌面）
+      目录路径    → 在该目录下自动生成文件名
+      文件路径    → 补齐 .zip 后缀后使用
+    """
+    if not raw_output or not raw_output.strip():
+        # 自动生成
+        prefs = bpy.context.preferences.addons.get(__package__)
+        out_dir = None
+        if prefs:
+            out_dir = getattr(prefs.preferences, "pack_output_path", "") or None
+        if not out_dir or not Path(out_dir).exists():
+            out_dir = str(Path.home() / "Desktop")
+        return str(Path(out_dir) / _build_default_filename(portable_path_str))
+
+    p = Path(raw_output)
+
+    # 用户选了目录 → 在目录下生成文件名
+    if p.is_dir():
+        return str(p / _build_default_filename(portable_path_str))
+
+    # 无后缀或非 zip 后缀 → 强制补 .zip
+    if p.suffix.lower() != ".zip":
+        return str(p.with_suffix(".zip"))
+
+    return raw_output
 
 
 # ============================================================
@@ -29,39 +83,34 @@ class MMY_OT_PackPortable(bpy.types.Operator):
 
     portable_path: bpy.props.StringProperty(
         name="Portable 文件夹",
-        description="Blender portable/ 配置文件夹路径",
         subtype='DIR_PATH',
         default="",
     )
-    output_path: bpy.props.StringProperty(
-        name="输出 ZIP 路径",
-        description="打包输出的 ZIP 文件路径（留头自动生成）",
-        subtype='FILE_PATH',
+    output_dir: bpy.props.StringProperty(
+        name="输出目录",
+        description="ZIP 文件保存位置。留空则使用桌面或偏好设置中的目录",
+        subtype='DIR_PATH',
         default="",
     )
     version_override: bpy.props.StringProperty(
         name="版本号（可选）",
-        description="留空则自动从路径中检测 Blender 版本号",
         default="",
     )
 
     def invoke(self, context, event):
-        # 从偏好设置预填路径
         prefs = context.preferences.addons.get(__package__)
         if prefs:
             self.portable_path = getattr(prefs.preferences, "last_portable_path", "")
-            out_dir = getattr(prefs.preferences, "pack_output_path", "")
-            if out_dir and Path(out_dir).exists():
-                # 先不填 output_path，让用户决定
-                pass
-        return context.window_manager.invoke_props_dialog(self, width=520)
+            self.output_dir = getattr(prefs.preferences, "pack_output_path", "")
+        return context.window_manager.invoke_props_dialog(self, width=500)
 
     def draw(self, context):
         layout = self.layout
         layout.prop(self, "portable_path")
-        layout.prop(self, "output_path")
+        layout.prop(self, "output_dir")
         layout.prop(self, "version_override")
-        layout.label(text="输出路径留空则自动生成（桌面/版本号_时间戳.zip）", icon='INFO')
+        layout.label(text="文件名自动生成：Blender_Portable_v{版本}_{时间}.zip",
+                     icon='INFO')
 
     def execute(self, context):
         # ---- 校验 portable 路径 ----
@@ -71,44 +120,28 @@ class MMY_OT_PackPortable(bpy.types.Operator):
 
         portable_path = Path(self.portable_path)
 
-        # ---- 生成输出路径 ----
-        if not self.output_path:
-            version = self.version_override.strip()
-            if not version:
-                # 尝试从路径自动检测
-                import re
-                parent_name = portable_path.parent.name
-                m = re.search(r"(\d+\.\d+(\.\d+)?)", parent_name)
-                if m:
-                    version = m.group(1)
-                    if version.count(".") == 1:
-                        version += ".0"
-                else:
-                    version = "unknown"
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-            default_name = f"Blender_Portable_v{version}_{timestamp}.zip"
+        # ---- 解析输出路径（关键修复）----
+        output_path = _resolve_output_path(
+            self.output_dir,
+            str(portable_path),
+        )
+        # 如果有手动版本号也传进去
+        if self.version_override.strip():
+            # 重新构建带自定义版本号的文件名
+            fname = _build_default_filename(str(portable_path), self.version_override)
+            out_dir = str(Path(output_path).parent)
+            output_path = str(Path(out_dir) / fname)
 
-            # 优先用偏好设置中的输出目录
-            out_dir = None
-            prefs = context.preferences.addons.get(__package__)
-            if prefs:
-                out_dir = getattr(prefs.preferences, "pack_output_path", "") or None
-            if not out_dir or not Path(out_dir).exists():
-                out_dir = str(Path.home() / "Desktop")
-            self.output_path = str(Path(out_dir) / default_name)
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        output_path = Path(self.output_path)
-        if not output_path.parent.exists():
-            output_path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"[MMY] 打包参数：portable={portable_path}  output={output_path}")
 
-        # ---- 保存上次路径到偏好设置 ----
+        # ---- 保存上次使用的路径 ----
         prefs = context.preferences.addons.get(__package__)
         if prefs:
             try:
                 prefs.preferences.last_portable_path = str(portable_path)
-                # 触发配置文件写入
-                from .preferences import _on_pack_output_path_changed
-                # 只更新 portable 路径，不碰 output 路径
                 import json
                 config_path = Path(__file__).parent.parent / ".pack_config.json"
                 config = {}
@@ -121,22 +154,23 @@ class MMY_OT_PackPortable(bpy.types.Operator):
             except Exception as e:
                 print(f"[MMY] 保存路径失败: {e}")
 
-        # ---- 组装命令行参数 ----
-        args = [sys.executable, str(_PACK_SCRIPT), str(portable_path)]
-        if self.output_path:
-            args.append(str(output_path))
+        # ---- 启动子进程 ----
+        args = [
+            sys.executable,
+            str(_PACK_SCRIPT),
+            str(portable_path),
+            str(output_path),
+        ]
         if self.version_override.strip():
             args.extend(["--version", self.version_override.strip()])
 
-        # ---- 启动子进程 ----
         try:
             subprocess.Popen(
                 args,
                 cwd=str(_PACK_SCRIPT.parent),
                 creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0,
             )
-            self.report({"INFO"}, f"已启动打包：{portable_path.name}")
-            print(f"[MMY] 打包进程已启动：{' '.join(str(a) for a in args)}")
+            self.report({"INFO"}, f"已启动打包：{output_path.name}")
         except Exception as e:
             self.report({"ERROR"}, f"启动失败: {e}")
             return {"CANCELLED"}
