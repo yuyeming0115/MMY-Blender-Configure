@@ -1,5 +1,5 @@
 bl_info = {
-    "name": "MMY Blender Configure",
+    "name": "MMY Blender Configure（Portable配置打包输出）",
     "author": "会叫喵的鱼",
     "version": (1, 0, 0),
     "blender": (4, 5, 0),
