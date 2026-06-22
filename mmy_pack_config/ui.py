@@ -1,297 +1,217 @@
+"""
+MMY Blender Configure — 顶部菜单栏 UI + 打包弹窗
+
+打包脚本内嵌在插件包中（mmy_pack_config/pack_script.py），
+通过命令行参数传递路径，不依赖 tkinter。
+"""
+
 import bpy
-from . import addon_timer
-from .utils import is_portable_mode, detect_path_dependencies
+import subprocess
+import sys
+import os
+import re
 from pathlib import Path
+from datetime import datetime
 
 
-class MMY_OT_AddBookmark(bpy.types.Operator):
-    """添加当前路径到书签"""
-    bl_idname = "mmy.add_bookmark"
-    bl_label = "添加书签"
-    bl_description = "将当前备份路径收藏到书签列表"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def execute(self, context):
-        prefs = context.preferences.addons[__package__].preferences
-        current_path = prefs.backup_path
-
-        if not current_path:
-            self.report({'WARNING'}, "请先设置备份路径")
-            return {'CANCELLED'}
-
-        # 检查是否已存在
-        for item in prefs.bookmarks:
-            if item.path == current_path:
-                self.report({'INFO'}, "此路径已在书签中")
-                return {'CANCELLED'}
-
-        # 添加新书签
-        new_bookmark = prefs.bookmarks.add()
-        new_bookmark.path = current_path
-        # 使用路径最后一级目录名作为默认名称
-        new_bookmark.name = Path(current_path).name or "书签"
-
-        self.report({'INFO'}, f"已添加书签: {new_bookmark.name}")
-        return {'FINISHED'}
+_PACK_SCRIPT = Path(__file__).parent / "pack_script.py"
 
 
-class MMY_OT_SelectBookmark(bpy.types.Operator):
-    """从书签中选择路径"""
-    bl_idname = "mmy.select_bookmark"
-    bl_label = "选择书签路径"
-    bl_description = "从收藏的书签中选择一个路径"
-    bl_options = {'REGISTER', 'UNDO'}
+# ============================================================
+# 辅助：生成标准文件名
+# ============================================================
 
-    bookmark_index: bpy.props.IntProperty()
-
-    def execute(self, context):
-        prefs = context.preferences.addons[__package__].preferences
-        if self.bookmark_index < len(prefs.bookmarks):
-            prefs.backup_path = prefs.bookmarks[self.bookmark_index].path
-            self.report({'INFO'}, f"已选择: {prefs.bookmarks[self.bookmark_index].name}")
-        return {'FINISHED'}
-
-
-class MMY_OT_RemoveBookmark(bpy.types.Operator):
-    """删除书签"""
-    bl_idname = "mmy.remove_bookmark"
-    bl_label = "删除书签"
-    bl_description = "从书签列表中删除此项"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    bookmark_index: bpy.props.IntProperty()
-
-    def execute(self, context):
-        prefs = context.preferences.addons[__package__].preferences
-        if self.bookmark_index < len(prefs.bookmarks):
-            prefs.bookmarks.remove(self.bookmark_index)
-            # 调整索引
-            if prefs.bookmark_index >= len(prefs.bookmarks):
-                prefs.bookmark_index = max(0, len(prefs.bookmarks) - 1)
-        return {'FINISHED'}
+def _build_default_filename(portable_path_str, version_override=""):
+    """生成标准输出文件名：Blender_Portable_v{版本}_{时间戳}.zip"""
+    version = version_override.strip() if version_override else ""
+    if not version:
+        portable_path = Path(portable_path_str)
+        parent_name = portable_path.parent.name
+        m = re.search(r"(\d+\.\d+(\.\d+)?)", parent_name)
+        if m:
+            version = m.group(1)
+            if version.count(".") == 1:
+                version += ".0"
+        else:
+            version = "unknown"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    return f"Blender_Portable_v{version}_{timestamp}.zip"
 
 
-class MMY_OT_SelectBackupPath(bpy.types.Operator):
-    """选择备份保存位置"""
-    bl_idname = "mmy.select_backup_path"
-    bl_label = "选择备份路径"
-    bl_description = "选择备份文件的默认保存目录"
-    bl_options = {'REGISTER'}
+def _resolve_output_path(raw_output, portable_path_str):
+    """
+    将用户输入的输出路径规范化为 .zip 文件路径。
 
-    directory: bpy.props.StringProperty(subtype='DIR_PATH')
+    规则：
+      空/留空     → 自动生成到配置的目录（默认桌面）
+      目录路径    → 在该目录下自动生成文件名
+      文件路径    → 补齐 .zip 后缀后使用
+    """
+    if not raw_output or not raw_output.strip():
+        # 自动生成
+        prefs = bpy.context.preferences.addons.get(__package__)
+        out_dir = None
+        if prefs:
+            out_dir = getattr(prefs.preferences, "pack_output_path", "") or None
+        if not out_dir or not Path(out_dir).exists():
+            out_dir = str(Path.home() / "Desktop")
+        return str(Path(out_dir) / _build_default_filename(portable_path_str))
 
-    def invoke(self, context, event):
-        context.window_manager.fileselect_add(self)
-        return {'RUNNING_MODAL'}
+    p = Path(raw_output)
 
-    def execute(self, context):
-        prefs = context.preferences.addons[__package__].preferences
-        prefs.backup_path = self.directory
-        return {'FINISHED'}
+    # 用户选了目录 → 在目录下生成文件名
+    if p.is_dir():
+        return str(p / _build_default_filename(portable_path_str))
+
+    # 无后缀或非 zip 后缀 → 强制补 .zip
+    if p.suffix.lower() != ".zip":
+        return str(p.with_suffix(".zip"))
+
+    return raw_output
 
 
-class MMY_OT_ShowHelp(bpy.types.Operator):
-    """显示详细使用说明"""
-    bl_idname = "mmy.show_help"
-    bl_label = "使用帮助"
-    bl_description = "查看详细使用说明和 Portable 模式迁移指南"
-    bl_options = {'REGISTER'}
+# ============================================================
+# 打包弹窗 Operator
+# ============================================================
 
-    def execute(self, context):
-        return {'FINISHED'}
+class MMY_OT_PackPortable(bpy.types.Operator):
+    """选择路径并打包导出 Blender Portable 配置"""
+    bl_idname = "mmy.pack_portable"
+    bl_label = "打包导出 Portable"
+    bl_description = "选择 portable 文件夹和输出路径，执行打包"
+    bl_options = {"REGISTER"}
+
+    portable_path: bpy.props.StringProperty(
+        name="Portable 文件夹",
+        subtype='DIR_PATH',
+        default="",
+    )
+    output_dir: bpy.props.StringProperty(
+        name="输出目录",
+        description="ZIP 文件保存位置。留空则使用桌面或偏好设置中的目录",
+        subtype='DIR_PATH',
+        default="",
+    )
+    version_override: bpy.props.StringProperty(
+        name="版本号（可选）",
+        default="",
+    )
+    exclude_cache: bpy.props.BoolProperty(
+        name="排除缓存/临时文件",
+        description="排除 __pycache__、*.pyc、.git、*.log 等文件（建议勾选，ZIP 更小）",
+        default=True,
+    )
 
     def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self, width=450)
+        prefs = context.preferences.addons.get(__package__)
+        if prefs:
+            self.portable_path = getattr(prefs.preferences, "last_portable_path", "")
+            self.output_dir = getattr(prefs.preferences, "pack_output_path", "")
+        return context.window_manager.invoke_props_dialog(self, width=500)
 
     def draw(self, context):
         layout = self.layout
-
-        # 功能说明
-        box = layout.box()
-        box.label(text="功能说明", icon='INFO')
-        col = box.column(align=True)
-        col.label(text="• 备份：保存当前 Blender 配置为 zip 文件")
-        col.label(text="• 导入：从 zip 文件恢复配置（会覆盖现有配置）")
-        col.label(text="• 导出：将配置保存到指定位置（便于分享给他人）")
-
-        # Portable 模式说明
-        box = layout.box()
-        box.label(text="Portable 模式迁移说明", icon='QUESTION')
-        col = box.column(align=True)
-        col.label(text="• Portable → 普通：配置导入到系统用户目录")
-        col.label(text="• 普通 → Portable：配置导入到 portable 目录")
-        col.label(text="• 跨模式迁移时，书签、资产库路径可能需要手动调整")
-
-        # 路径依赖说明
-        box = layout.box()
-        box.label(text="路径依赖说明", icon='ERROR')
-        col = box.column(align=True)
-        col.label(text="• 书签、资产库、最近文件等包含绝对路径")
-        col.label(text="• 迁移到不同环境后，这些路径可能失效")
-        col.label(text="• 导入时会有警告提示，请检查并手动调整")
-
-
-class MMY_OT_OpenConfigPanel(bpy.types.Operator):
-    """打开配置管理面板"""
-    bl_idname = "mmy.open_config_panel"
-    bl_label = "MMY 配置管理"
-    bl_description = "打开配置备份、导入、导出管理面板"
-    bl_options = {'REGISTER'}
+        layout.prop(self, "portable_path")
+        layout.prop(self, "output_dir")
+        layout.prop(self, "version_override")
+        layout.prop(self, "exclude_cache")
+        layout.label(text="文件名自动生成：Blender_Portable_v{版本}_{时间}.zip",
+                     icon='INFO')
 
     def execute(self, context):
-        return {'FINISHED'}
+        # ---- 校验 portable 路径 ----
+        if not self.portable_path or not Path(self.portable_path).exists():
+            self.report({"ERROR"}, "请先选择有效的 Portable 文件夹")
+            return {"CANCELLED"}
 
-    def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self, width=420)
+        portable_path = Path(self.portable_path)
 
-    def draw(self, context):
-        layout = self.layout
-        prefs = context.preferences.addons[__package__].preferences
+        # ---- 解析输出路径（关键修复）----
+        output_path = _resolve_output_path(
+            self.output_dir,
+            str(portable_path),
+        )
+        # 如果有手动版本号也传进去
+        if self.version_override.strip():
+            # 重新构建带自定义版本号的文件名
+            fname = _build_default_filename(str(portable_path), self.version_override)
+            out_dir = str(Path(output_path).parent)
+            output_path = str(Path(out_dir) / fname)
 
-        # === 环境信息区 ===
-        self._draw_environment_info(layout)
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # === 备份路径设置区 ===
-        self._draw_backup_path(layout, prefs)
+        print(f"[MMY] 打包参数：portable={portable_path}  output={output_path}")
 
-        # === 使用说明区 ===
-        self._draw_usage_guide(layout)
+        # ---- 保存上次使用的路径 ----
+        prefs = context.preferences.addons.get(__package__)
+        if prefs:
+            try:
+                prefs.preferences.last_portable_path = str(portable_path)
+                import json
+                config_path = Path(__file__).parent.parent / ".pack_config.json"
+                config = {}
+                if config_path.exists():
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        config = json.load(f)
+                config["last_portable_path"] = str(portable_path)
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(config, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                print(f"[MMY] 保存路径失败: {e}")
 
-        # === 配置类型选择区（含路径依赖警告）===
-        self._draw_config_options(layout, prefs)
+        # ---- 启动子进程 ----
+        args = [
+            sys.executable,
+            str(_PACK_SCRIPT),
+            str(portable_path),
+            str(output_path),
+        ]
+        if self.version_override.strip():
+            args.extend(["--version", self.version_override.strip()])
+        if not self.exclude_cache:
+            args.append("--all")
+            print(f"[MMY] 使用 --all 模式（不排除任何文件）")
 
-        # === 操作按钮区 ===
-        self._draw_action_buttons(layout)
+        try:
+            subprocess.Popen(
+                args,
+                cwd=str(_PACK_SCRIPT.parent),
+                creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0,
+            )
+            self.report({"INFO"}, f"已启动打包：{output_path.name}")
+        except Exception as e:
+            self.report({"ERROR"}, f"启动失败: {e}")
+            return {"CANCELLED"}
 
-        # === 插件耗时监控区 ===
-        self._draw_addon_timer(layout)
-
-    def _draw_environment_info(self, layout):
-        """绘制运行环境信息区"""
-        box = layout.box()
-
-        # 版本号
-        version = ".".join(str(v) for v in bpy.app.version)
-
-        # 模式状态
-        portable = is_portable_mode()
-        mode_text = "Portable 模式" if portable else "普通模式"
-
-        # 配置路径
-        config_path = bpy.utils.user_resource('CONFIG')
-
-        row = box.row()
-        row.label(text=f"Blender {version} | {mode_text}", icon='INFO')
-
-        row = box.row()
-        row.label(text=f"配置路径: {config_path}", icon='FILE_FOLDER')
-
-    def _draw_backup_path(self, layout, prefs):
-        """绘制备份路径设置区，含书签功能"""
-        box = layout.box()
-
-        # 路径输入和按钮
-        row = box.row(align=True)
-        row.prop(prefs, "backup_path", text="备份保存位置")
-        # 书签按钮（收藏当前路径）
-        row.operator("mmy.add_bookmark", text="", icon='BOOKMARKS')
-
-        # 书签列表
-        if prefs.bookmarks:
-            col = box.column(align=True)
-            col.label(text="收藏路径:", icon='BOOKMARKS')
-            for i, bookmark in enumerate(prefs.bookmarks):
-                row = col.row(align=True)
-                # 选择书签按钮
-                op = row.operator("mmy.select_bookmark", text=bookmark.name, icon='FILE_FOLDER')
-                op.bookmark_index = i
-                # 删除书签按钮
-                op = row.operator("mmy.remove_bookmark", text="", icon='X')
-                op.bookmark_index = i
-
-    def _draw_usage_guide(self, layout):
-        """绘制使用说明区"""
-        box = layout.box()
-        box.label(text="使用说明:", icon='HELP')
-
-        col = box.column(align=True)
-        col.label(text="• 备份 → 保存当前配置到 zip 文件")
-        col.label(text="• 导入 → 从 zip 恢复配置（会覆盖现有配置）")
-        col.label(text="• 导出 → 保存配置到指定位置（便于分享）")
-
-    def _draw_config_options(self, layout, prefs):
-        """绘制配置类型选项区，含路径依赖警告"""
-        box = layout.box()
-        box.label(text="选择要备份/导入的配置类型")
-
-        # 检测路径依赖
-        path_deps = detect_path_dependencies()
-
-        box.prop(prefs, "include_keymap")
-        box.prop(prefs, "include_prefs")
-        box.prop(prefs, "include_addons")
-
-        # 用户配置 - 带路径依赖警告
-        row = box.row()
-        row.prop(prefs, "include_config")
-        if prefs.include_config and path_deps:
-            dep_text = "⚠ 检测到路径依赖: " + ", ".join(path_deps)
-            row.label(text=dep_text, icon='ERROR')
-
-        box.prop(prefs, "include_presets")
-        box.prop(prefs, "include_startup")
-        box.prop(prefs, "include_datafiles")
-
-    def _draw_action_buttons(self, layout):
-        """绘制操作按钮区"""
-        layout.separator()
-        row = layout.row(align=True)
-        row.operator("mmy.backup_config", text="备份", icon='FILE_TICK')
-        row.operator("mmy.import_config", text="导入", icon='IMPORT')
-        row.operator("mmy.export_config", text="导出", icon='EXPORT')
-
-        # 帮助按钮（右侧）
-        row.operator("mmy.show_help", text="", icon='QUESTION')
-
-    def _draw_addon_timer(self, layout):
-        """绘制插件耗时监控区"""
-        records = addon_timer.manager.get_records()
-        if records:
-            layout.separator()
-            box = layout.box()
-            box.label(text="插件加载耗时", icon='TIME')
-            for rec in records:
-                row = box.row()
-                row.label(text=f"{rec.name}  {rec.elapsed * 1000:.1f}ms")
-                if rec.error:
-                    row.alert = True
-                    row.label(text="ERROR", icon='ERROR')
+        return {"FINISHED"}
 
 
-def draw_header_button(self, context):
-    """顶部栏按钮绘制"""
+# ============================================================
+# 注册到顶部菜单栏
+# ============================================================
+
+def draw_pack_button(self, context):
     layout = self.layout
     row = layout.row(align=True)
-    row.operator("mmy.open_config_panel", text="", icon='WORDWRAP_ON')
-
-
-classes = (
-    MMY_OT_AddBookmark,
-    MMY_OT_SelectBookmark,
-    MMY_OT_RemoveBookmark,
-    MMY_OT_SelectBackupPath,
-    MMY_OT_ShowHelp,
-    MMY_OT_OpenConfigPanel,
-)
+    row.scale_x = 0.85
+    row.operator("mmy.pack_portable", text="打包导出", icon="PACKAGE")
 
 
 def register():
-    for cls in classes:
-        bpy.utils.register_class(cls)
-    bpy.types.TOPBAR_HT_upper_bar.prepend(draw_header_button)
+    bpy.utils.register_class(MMY_OT_PackPortable)
+    try:
+        bpy.types.TOPBAR_MT_editor_menus.append(draw_pack_button)
+    except Exception as e:
+        print(f"[MMY] 无法注册顶部菜单按钮: {e}")
 
 
 def unregister():
-    bpy.types.TOPBAR_HT_upper_bar.remove(draw_header_button)
-    for cls in reversed(classes):
-        bpy.utils.unregister_class(cls)
+    try:
+        bpy.types.TOPBAR_MT_editor_menus.remove(draw_pack_button)
+    except Exception:
+        pass
+    try:
+        bpy.utils.unregister_class(MMY_OT_PackPortable)
+    except Exception:
+        pass

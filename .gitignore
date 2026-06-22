@@ -24,3 +24,11 @@ desktop.ini
 
 # Claude Code
 .claude/
+.workbuddy/
+
+# Codex
+.codex/
+
+# MMY 项目配置
+.pack_config.json
+.mmy_timer_data.json
