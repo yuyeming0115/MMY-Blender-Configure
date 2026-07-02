@@ -9,7 +9,8 @@ MMY Blender Configure — 偏好设置面板
 import bpy
 import json
 from pathlib import Path
-from .addon_timer import manager, is_blender_official_addon
+from . import auto_pack
+from .addon_timer import AddonLoadRecord, manager, is_blender_official_addon, SELF_MODULE_NAME
 from .path_memory import apply_path_memory, save_path_memory
 
 
@@ -56,6 +57,131 @@ def _matches_prefix(name, prefixes):
     return any(clean_name.startswith(prefix) for prefix in prefixes)
 
 
+_ADDON_ITEMS_CACHE = []
+
+
+def _addon_enum_items(self, context):
+    """返回可重测插件列表。"""
+    _ADDON_ITEMS_CACHE.clear()
+    names = set()
+
+    records, _ = manager.get_display_records()
+    for rec in records:
+        clean_name = rec.name.replace("addon_utils: ", "")
+        if clean_name and clean_name != SELF_MODULE_NAME:
+            names.add(clean_name)
+
+    try:
+        for name in bpy.context.preferences.addons.keys():
+            if name != SELF_MODULE_NAME:
+                names.add(name)
+    except Exception:
+        pass
+
+    names = {
+        name for name in names
+        if not is_blender_official_addon(AddonLoadRecord(name=name, elapsed=0.0))
+    }
+
+    if not names:
+        _ADDON_ITEMS_CACHE.append(("__NONE__", "无可重测插件", ""))
+    else:
+        for name in sorted(names, key=str.casefold):
+            _ADDON_ITEMS_CACHE.append((name, name, ""))
+    return _ADDON_ITEMS_CACHE
+
+
+def _kind_label(kind):
+    labels = {
+        "startup_probe": "启动",
+        "manual_retest": "重测",
+        "session": "会话",
+        "early": "早期",
+    }
+    return labels.get(kind, kind or "")
+
+
+def _kind_icon(kind):
+    icons = {
+        "startup_probe": "RECOVER_LAST",
+        "manual_retest": "FILE_REFRESH",
+        "session": "CHECKMARK",
+        "early": "INFO",
+    }
+    return icons.get(kind, "BLANK1")
+
+
+class MMY_OT_InstallStartupProbe(bpy.types.Operator):
+    bl_idname = "mmy.install_startup_probe"
+    bl_label = "安装启动探针"
+    bl_options = {'INTERNAL'}
+
+    def execute(self, context):
+        try:
+            path = manager.install_probe()
+            self.report({'INFO'}, f"启动探针已安装，下次启动生效: {path.name}")
+            return {'FINISHED'}
+        except Exception as e:
+            self.report({'ERROR'}, f"安装启动探针失败: {e}")
+            return {'CANCELLED'}
+
+
+class MMY_OT_UninstallStartupProbe(bpy.types.Operator):
+    bl_idname = "mmy.uninstall_startup_probe"
+    bl_label = "卸载启动探针"
+    bl_options = {'INTERNAL'}
+
+    def execute(self, context):
+        try:
+            removed = manager.uninstall_probe()
+            msg = "启动探针已卸载" if removed else "启动探针未安装"
+            self.report({'INFO'}, msg)
+            return {'FINISHED'}
+        except Exception as e:
+            self.report({'ERROR'}, f"卸载启动探针失败: {e}")
+            return {'CANCELLED'}
+
+
+class MMY_OT_RetestSelectedAddon(bpy.types.Operator):
+    bl_idname = "mmy.retest_selected_addon"
+    bl_label = "重测选择插件"
+    bl_options = {'INTERNAL'}
+
+    def execute(self, context):
+        prefs = context.preferences.addons.get(__package__)
+        if not prefs:
+            self.report({'ERROR'}, "无法读取插件偏好设置")
+            return {'CANCELLED'}
+
+        module_name = prefs.preferences.selected_retest_addon
+        if not module_name or module_name == "__NONE__":
+            self.report({'WARNING'}, "请先选择要重测的插件")
+            return {'CANCELLED'}
+
+        try:
+            rec = manager.retest_addon(module_name)
+            if rec and rec.error:
+                self.report({'ERROR'}, f"{module_name} 重测失败")
+                return {'CANCELLED'}
+            self.report({'INFO'}, f"{module_name} 重测完成: {_fmt_time(rec.elapsed)}")
+            return {'FINISHED'}
+        except Exception as e:
+            self.report({'ERROR'}, f"{module_name} 重测失败: {e}")
+            return {'CANCELLED'}
+
+
+class MMY_OT_TestWeeklyAutoPack(bpy.types.Operator):
+    bl_idname = "mmy.test_weekly_auto_pack"
+    bl_label = "测试自动打包"
+    bl_description = "立即使用上次 Portable 路径和打包输出目录启动一次打包"
+    bl_options = {'INTERNAL'}
+
+    def execute(self, context):
+        ok, message = auto_pack.run_weekly_check(force=True)
+        self.report({'INFO'} if ok else {'ERROR'}, message)
+        return {'FINISHED'} if ok else {'CANCELLED'}
+
+
 class MMYConfigPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
@@ -75,6 +201,12 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
         subtype='DIR_PATH',
         default="",
         update=lambda self, ctx: _on_path_memory_changed(self),
+    )
+
+    enable_weekly_auto_pack: bpy.props.BoolProperty(
+        name="每周一自动打包",
+        description="每周一使用上次 Portable 路径，自动输出 zip 到上次打包输出目录",
+        default=False,
     )
 
     # ---------- 展开控制 ----------
@@ -100,6 +232,11 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
         default="",
     )
 
+    selected_retest_addon: bpy.props.EnumProperty(
+        name="重测插件",
+        items=_addon_enum_items,
+    )
+
     # ---------- 绘制面板 ----------
     def draw(self, context):
         layout = self.layout
@@ -110,17 +247,36 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
         col = box.column(align=True)
         col.prop(self, "last_portable_path")
         col.prop(self, "pack_output_path")
+        row = col.row(align=True)
+        row.prop(self, "enable_weekly_auto_pack")
+        row.operator("mmy.test_weekly_auto_pack", text="立即测试", icon='FILE_REFRESH')
 
         # ========== 区块2：插件加载耗时（双列彩虹色）==========
         self._draw_timer_panel(layout)
 
     # ---- 耗时监控面板（双列彩虹色） ----
+    def _draw_timer_tools(self, box):
+        tool_box = box.column(align=True)
+        probe_row = tool_box.row(align=True)
+        probe_installed = manager.is_probe_installed()
+        probe_row.label(
+            text="启动探针已安装" if probe_installed else "启动探针未安装",
+            icon='CHECKMARK' if probe_installed else 'RADIOBUT_OFF',
+        )
+        probe_row.operator("mmy.install_startup_probe", text="安装", icon='ADD')
+        probe_row.operator("mmy.uninstall_startup_probe", text="卸载", icon='REMOVE')
+
+        retest_row = tool_box.row(align=True)
+        retest_row.prop(self, "selected_retest_addon", text="")
+        retest_row.operator("mmy.retest_selected_addon", text="重测选择插件", icon='FILE_REFRESH')
+
     def _draw_timer_panel(self, layout):
         """双列布局 + 彩虹色表示耗时长短"""
         box = layout.box()
         box.label(text="插件加载耗时", icon='TIME')
+        self._draw_timer_tools(box)
 
-        records = manager.get_records()
+        records, using_history = manager.get_display_records()
 
         if not records:
             loaded = manager.load_data()
@@ -129,7 +285,11 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
                 row.label(text="暂无数据", icon='INFO')
                 row.label(text="重启 Blender 后开始监控", icon='BLANK1')
                 return
-            records = manager.get_records()
+            records, using_history = manager.get_display_records()
+
+        if using_history:
+            row = box.row(align=True)
+            row.label(text="显示上次保存记录，本次扫描完成后会自动刷新", icon='INFO')
 
         all_records = records
         hidden_records = []
@@ -241,7 +401,9 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
             row.alert = False
 
         # 名称
-        row.label(text=name, icon='BLANK1')
+        kind_label = _kind_label(getattr(rec, "kind", "session"))
+        suffix = f" [{kind_label}]" if kind_label else ""
+        row.label(text=f"{name}{suffix}", icon=_kind_icon(getattr(rec, "kind", "session")))
 
     @staticmethod
     def _draw_error_cell(col, rec):
@@ -295,7 +457,13 @@ def _on_path_memory_changed(self):
 # ============================================================
 # 注册 / 注销
 # ============================================================
-classes = (MMYConfigPreferences,)
+classes = (
+    MMY_OT_InstallStartupProbe,
+    MMY_OT_UninstallStartupProbe,
+    MMY_OT_RetestSelectedAddon,
+    MMY_OT_TestWeeklyAutoPack,
+    MMYConfigPreferences,
+)
 
 
 def register():

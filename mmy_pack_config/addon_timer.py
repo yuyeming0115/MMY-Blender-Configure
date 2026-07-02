@@ -19,13 +19,16 @@ import traceback
 import json
 import bpy
 from pathlib import Path
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
 
 
 # ============================================================
 # 持久化存储路径（与 pack.py 的 .pack_config.json 同级）
 # ============================================================
 DATA_FILE = Path(__file__).parent.parent / ".mmy_timer_data.json"
+PROBE_DATA_FILE = Path(__file__).parent.parent / ".mmy_timer_probe_data.json"
+PROBE_SCRIPT_NAME = "mmy_addon_timer_probe.py"
+SELF_MODULE_NAME = __package__.split(".")[0]
 
 
 @dataclass
@@ -34,37 +37,60 @@ class AddonLoadRecord:
     elapsed: float
     error: str = ""
     source: str = ""
+    kind: str = "session"
 
 
 class AddonTimerManager:
     def __init__(self):
         self.records: list[AddonLoadRecord] = []
+        self.previous_records: list[AddonLoadRecord] = []
         self._patched = False
         self._fallback_registered = False
+        self._original_enable = None
 
     # ---- 基础操作 ----
 
-    def record(self, name: str, elapsed: float, error: str = "", source: str = ""):
+    def begin_session(self):
+        """开始一次新的 Blender 插件加载监控会话。"""
+        self.records = []
+        self._fallback_registered = False
+
+    def record(self, name: str, elapsed: float, error: str = "", source: str = "", kind: str = "session"):
         """记录一条插件加载信息"""
-        # 避免重复记录同名插件（保留耗时最长的那条）
+        # 同名插件保留本次会话中的最新结果，避免旧的慢记录长期压住新数据。
         existing = next((r for r in self.records if r.name == name), None)
         if existing:
-            if elapsed > existing.elapsed:
-                existing.elapsed = elapsed
-            if error and not existing.error:
-                existing.error = error
-            if source and not existing.source:
+            existing.elapsed = elapsed
+            existing.error = error
+            if source:
                 existing.source = source
+            if kind:
+                existing.kind = kind
+            return existing
         else:
-            self.records.append(AddonLoadRecord(name, elapsed, error, source))
+            rec = AddonLoadRecord(name, elapsed, error, source, kind)
+            self.records.append(rec)
+            return rec
 
     def get_records(self):
         return self.records
+
+    def get_display_records(self):
+        """返回面板应展示的数据，以及是否为上次保存的历史数据。"""
+        if self.records:
+            return self.records, False
+        if self.previous_records:
+            return self.previous_records, True
+        return [], False
 
     # ---- 持久化 ----
 
     def save_data(self):
         """将当前记录保存到 JSON 文件"""
+        if not self.records:
+            print("[MMY] 当前会话暂无耗时数据，跳过保存")
+            return
+
         try:
             data = [asdict(r) for r in self.records]
             with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -80,12 +106,102 @@ class AddonTimerManager:
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            self.records = [AddonLoadRecord(**d) for d in data]
-            print(f"[MMY] 已加载历史耗时数据 ({len(self.records)} 条)")
+            self.previous_records = [_record_from_dict(d) for d in data]
+            print(f"[MMY] 已加载历史耗时数据 ({len(self.previous_records)} 条)")
             return True
         except Exception as e:
             print(f"[MMY] 加载历史耗时数据失败: {e}")
             return False
+
+    def load_probe_data(self):
+        """读取启动探针在本次 Blender 启动早期写出的数据。"""
+        if not PROBE_DATA_FILE.exists():
+            return False
+
+        try:
+            with open(PROBE_DATA_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            loaded = 0
+            for item in data:
+                rec = _record_from_dict(item)
+                rec.kind = rec.kind or "startup_probe"
+                self.record(rec.name, rec.elapsed, rec.error, rec.source, rec.kind)
+                loaded += 1
+            print(f"[MMY] 已加载启动探针耗时数据 ({loaded} 条)")
+            return True
+        except Exception as e:
+            print(f"[MMY] 加载启动探针耗时数据失败: {e}")
+            return False
+
+    # ---- 启动探针 ----
+
+    def get_probe_script_path(self) -> Path:
+        startup_dir = Path(bpy.utils.user_resource("SCRIPTS", path="startup", create=True))
+        return startup_dir / PROBE_SCRIPT_NAME
+
+    def is_probe_installed(self) -> bool:
+        try:
+            return self.get_probe_script_path().exists()
+        except Exception:
+            return False
+
+    def install_probe(self) -> Path:
+        """安装启动探针脚本，下次启动 Blender 时生效。"""
+        script_path = self.get_probe_script_path()
+        script_path.write_text(_build_probe_script(PROBE_DATA_FILE), encoding="utf-8")
+        print(f"[MMY] 启动探针已安装: {script_path}")
+        return script_path
+
+    def uninstall_probe(self) -> bool:
+        """卸载启动探针脚本。"""
+        script_path = self.get_probe_script_path()
+        if script_path.exists():
+            script_path.unlink()
+            print(f"[MMY] 启动探针已卸载: {script_path}")
+            return True
+        return False
+
+    # ---- 手动重测 ----
+
+    def retest_addon(self, module_name: str):
+        """禁用并重新启用指定插件，记录当前会话中的重测耗时。"""
+        module_name = module_name.strip()
+        if not module_name:
+            raise ValueError("未选择插件")
+        if module_name == SELF_MODULE_NAME:
+            raise ValueError("不能重测当前监控插件本身")
+
+        try:
+            from bpy.utils import _addon_utils as addon_utils
+        except ImportError:
+            import addon_utils
+
+        try:
+            addon_utils.disable(module_name, default_set=False)
+        except Exception:
+            return self._record_retest_error(module_name, "禁用插件失败")
+
+        _purge_addon_modules(module_name)
+
+        err = ""
+        mod = None
+        t0 = time.perf_counter()
+        enable_func = self._original_enable or getattr(addon_utils, "enable")
+        try:
+            mod = enable_func(module_name, default_set=False)
+        except Exception:
+            err = traceback.format_exc()
+
+        elapsed = time.perf_counter() - t0
+        rec = self.record(module_name, elapsed, err, _detect_addon_source(module_name, mod), "manual_retest")
+        self.save_data()
+        return rec
+
+    def _record_retest_error(self, module_name: str, message: str):
+        err = f"{message}\n{traceback.format_exc()}"
+        rec = self.record(module_name, 0.0, err, _detect_addon_source(module_name), "manual_retest")
+        self.save_data()
+        return rec
 
     # ---- Monkey-patch ----
 
@@ -108,19 +224,20 @@ class AddonTimerManager:
             return
 
         manager = self
+        self._original_enable = original_enable
 
         def _timed_enable(module_name, *args, **kwargs):
             t0 = time.perf_counter()
-            err = ""
-            mod = None
             try:
                 mod = original_enable(module_name, *args, **kwargs)
             except Exception:
                 err = traceback.format_exc()
+                elapsed = time.perf_counter() - t0
+                manager.record(module_name, elapsed, err, _detect_addon_source(module_name), "session")
+                raise
 
             elapsed = time.perf_counter() - t0
-            manager.record(module_name, elapsed, err, _detect_addon_source(module_name, mod))
-
+            manager.record(module_name, elapsed, "", _detect_addon_source(module_name, mod), "session")
             return mod
 
         try:
@@ -150,7 +267,7 @@ class AddonTimerManager:
                 for mod_name in prefs.keys():
                     if mod_name not in recorded_names:
                         if mod_name in sys.modules:
-                            manager.record(mod_name, 0.0, "", _detect_addon_source(mod_name))
+                            manager.record(mod_name, 0.0, "", _detect_addon_source(mod_name), "early")
                             scanned += 1
                 print(f"[MMY] Fallback 扫描完成：发现 {scanned} 个早期插件")
             except Exception as e:
@@ -179,6 +296,7 @@ class AddonTimerManager:
             import importlib
             importlib.reload(addon_utils)
             self._patched = False
+            self._original_enable = None
             print("[MMY] AddonTimerManager: monkey-patch 已恢复")
 
             # 注销前保存数据
@@ -254,6 +372,106 @@ def _is_under_blender_system_scripts(module_path: Path) -> bool:
         return False
 
 
+def _purge_addon_modules(module_name: str):
+    """清理目标插件主模块与子模块，便于重测导入成本。"""
+    prefix = module_name + "."
+    for name in list(sys.modules.keys()):
+        if name == module_name or name.startswith(prefix):
+            sys.modules.pop(name, None)
+
+
+def _build_probe_script(data_file: Path) -> str:
+    """生成可放入 Blender startup 目录的早期计时脚本。"""
+    return f'''# Auto-generated by MMY Blender Configure. Do not edit manually.
+import json
+import sys
+import time
+import traceback
+from pathlib import Path
+
+DATA_FILE = Path({str(data_file)!r})
+RECORDS = []
+
+
+def _detect_source(module_name, module=None):
+    if module_name.startswith("bl_ext.blender_org."):
+        return "official"
+
+    module = module or sys.modules.get(module_name)
+    module_file = getattr(module, "__file__", "") if module else ""
+    if not module_file:
+        return ""
+
+    path_text = str(module_file).replace("\\\\", "/").lower()
+    if "/extensions/blender_org/" in path_text:
+        return "official"
+    return "user"
+
+
+def _record(module_name, elapsed, error="", source=""):
+    item = {{
+        "name": module_name,
+        "elapsed": elapsed,
+        "error": error,
+        "source": source,
+        "kind": "startup_probe",
+    }}
+    for index, existing in enumerate(RECORDS):
+        if existing.get("name") == module_name:
+            RECORDS[index] = item
+            break
+    else:
+        RECORDS.append(item)
+    _save()
+
+
+def _save():
+    try:
+        DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(RECORDS, f, indent=2, ensure_ascii=False)
+    except Exception as exc:
+        print(f"[MMY Probe] save failed: {{exc}}")
+
+
+def _install():
+    try:
+        from bpy.utils import _addon_utils as addon_utils
+    except Exception:
+        try:
+            import addon_utils
+        except Exception as exc:
+            print(f"[MMY Probe] addon_utils unavailable: {{exc}}")
+            return
+
+    original_enable = getattr(addon_utils, "enable", None)
+    if not original_enable or getattr(original_enable, "_mmy_startup_probe", False):
+        return
+
+    RECORDS.clear()
+    _save()
+
+    def _timed_enable(module_name, *args, **kwargs):
+        t0 = time.perf_counter()
+        try:
+            mod = original_enable(module_name, *args, **kwargs)
+        except Exception:
+            err = traceback.format_exc()
+            _record(module_name, time.perf_counter() - t0, err, _detect_source(module_name))
+            raise
+
+        _record(module_name, time.perf_counter() - t0, "", _detect_source(module_name, mod))
+        return mod
+
+    _timed_enable._mmy_startup_probe = True
+    addon_utils.enable = _timed_enable
+    print("[MMY Probe] startup addon timer installed")
+
+
+_install()
+'''
+
+
 _KNOWN_BLENDER_ADDONS = {
     "add_curve_extra_objects",
     "add_mesh_extra_objects",
@@ -318,3 +536,10 @@ _KNOWN_BLENDER_ADDONS = {
     "ui_translate",
     "viewport_vr_preview",
 }
+
+
+def _record_from_dict(data: dict) -> AddonLoadRecord:
+    """兼容旧版 JSON，并忽略未来版本中可能新增的字段。"""
+    valid_keys = {field.name for field in fields(AddonLoadRecord)}
+    values = {key: value for key, value in data.items() if key in valid_keys}
+    return AddonLoadRecord(**values)
