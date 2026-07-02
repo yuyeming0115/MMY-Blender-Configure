@@ -87,11 +87,37 @@ def get_blender_version(portable_path, version_override=None):
 
 EXCLUDE_PATTERNS = [
     "__pycache__",      # Python 缓存目录
+    ".cache",           # 通用缓存目录
+    ".pytest_cache",    # pytest 缓存
+    ".mypy_cache",      # mypy 缓存
+    ".ruff_cache",      # ruff 缓存
+    "cache",            # 通用缓存目录
+    "caches",           # 通用缓存目录
+    "cacheddata",       # Chromium/Electron 缓存
+    "code cache",       # Chromium/Electron 缓存
+    "gpucache",         # GPU 缓存
+    "crashpad",         # 崩溃报告缓存
+    "logs",             # 日志目录
+    "tmp",              # 临时目录
+    "temp",             # 临时目录
     "*.pyc",           # Python 编译文件
     "*.pyo",           # Python 优化编译文件
     ".git",             # Git 仓库元数据
+    ".hg",              # Mercurial 元数据
+    ".svn",             # SVN 元数据
+    ".idea",            # JetBrains 配置
+    ".vscode",          # VS Code 配置
     "*.log",            # 日志文件
     "*.tmp",            # 临时文件
+    "*.temp",           # 临时文件
+    "*.bak",            # 备份文件
+    "*.backup",         # 备份文件
+    "*.old",            # 旧版本文件
+    "*.blend1",         # Blender 自动备份
+    "*.blend2",         # Blender 自动备份
+    "*.blend3",         # Blender 自动备份
+    "*.part",           # 未完成下载
+    "*.crdownload",     # Chrome 未完成下载
     "thumbs.db",        # Windows 缩略图缓存
     "._*",              # macOS 资源派生文件
     ".ds_store",        # macOS Finder 元数据
@@ -100,11 +126,37 @@ EXCLUDE_PATTERNS = [
 # 用于统计排除原因
 _EXCLUDE_DESCRIPTION = {
     "__pycache__":  "Python 缓存目录",
+    ".cache":       "通用缓存目录",
+    ".pytest_cache": "pytest 缓存目录",
+    ".mypy_cache":  "mypy 缓存目录",
+    ".ruff_cache":  "ruff 缓存目录",
+    "cache":        "通用缓存目录",
+    "caches":       "通用缓存目录",
+    "cacheddata":   "Chromium/Electron 缓存",
+    "code cache":   "Chromium/Electron 缓存",
+    "gpucache":     "GPU 缓存",
+    "crashpad":     "崩溃报告缓存",
+    "logs":         "日志目录",
+    "tmp":          "临时目录",
+    "temp":         "临时目录",
     "*.pyc":        "Python 编译文件 (.pyc)",
     "*.pyo":        "Python 优化编译文件 (.pyo)",
     ".git":          "Git 仓库元数据",
+    ".hg":           "Mercurial 元数据",
+    ".svn":          "SVN 元数据",
+    ".idea":         "JetBrains 配置",
+    ".vscode":       "VS Code 配置",
     "*.log":         "日志文件 (.log)",
     "*.tmp":         "临时文件 (.tmp)",
+    "*.temp":        "临时文件 (.temp)",
+    "*.bak":         "备份文件 (.bak)",
+    "*.backup":      "备份文件 (.backup)",
+    "*.old":         "旧版本文件 (.old)",
+    "*.blend1":      "Blender 自动备份 (.blend1)",
+    "*.blend2":      "Blender 自动备份 (.blend2)",
+    "*.blend3":      "Blender 自动备份 (.blend3)",
+    "*.part":        "未完成下载文件 (.part)",
+    "*.crdownload":  "Chrome 未完成下载文件",
     "thumbs.db":     "Windows 缩略图缓存",
     "._*":           "macOS 资源派生文件",
     ".ds_store":     "macOS Finder 元数据",
@@ -121,23 +173,25 @@ def should_exclude(file_path, exclude_patterns=None):
     if exclude_patterns is None:
         exclude_patterns = EXCLUDE_PATTERNS
 
-    file_path_str = str(file_path).replace("\\", "/")
-    file_name = file_path.name
+    file_name = file_path.name.lower()
+    path_parts = {part.lower() for part in file_path.parts}
 
     import fnmatch
 
     for pattern in exclude_patterns:
+        pattern_key = pattern.lower()
+
         # 1) 目录名精确匹配（如 __pycache__ 出现在路径任一层）
-        if pattern in file_path.parts:
+        if pattern_key in path_parts:
             return True, _EXCLUDE_DESCRIPTION.get(pattern, pattern)
 
         # 2) 通配符文件模式（如 *.pyc、._*）
-        if "*" in pattern:
-            if fnmatch.fnmatch(file_name, pattern):
+        if "*" in pattern_key:
+            if fnmatch.fnmatch(file_name, pattern_key):
                 return True, _EXCLUDE_DESCRIPTION.get(pattern, pattern)
 
-        # 3) 精确文件名匹配（如 .ds_store、.git）
-        if file_name == pattern or pattern in file_path_str:
+        # 3) 精确文件名匹配（如 .ds_store）
+        if file_name == pattern_key:
             return True, _EXCLUDE_DESCRIPTION.get(pattern, pattern)
 
     return False, None
@@ -234,17 +288,16 @@ def pack_portable(portable_path, output_path, compress=False, exclude_patterns=N
     # 确保输出目录存在
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # 统计
-    total_files = sum(1 for _ in portable_path.rglob("*") if _.is_file())
     packed_files = 0
     skipped_files = 0
     exclude_reasons = {}   # {原因描述: 计数}
+    output_resolved = output_path.resolve(strict=False)
 
     compression = zipfile.ZIP_DEFLATED if compress else zipfile.ZIP_STORED
     mode_label = "压缩" if compress else "存储（快速）"
 
     print(f"[MMY] 开始打包 {portable_path}")
-    print(f"[MMY] 总文件数：{total_files}")
+    print("[MMY] 总文件数：边打包边统计（跳过预扫描）")
     print(f"[MMY] 输出到：{output_path}")
     print(f"[MMY] 模式：{mode_label}")
     if use_exclude:
@@ -256,8 +309,12 @@ def pack_portable(portable_path, output_path, compress=False, exclude_patterns=N
         for file_path in portable_path.rglob("*"):
             if not file_path.is_file():
                 continue
+            if file_path.resolve(strict=False) == output_resolved:
+                skipped_files += 1
+                exclude_reasons["输出文件自身"] = exclude_reasons.get("输出文件自身", 0) + 1
+                continue
             if use_exclude:
-                excluded, reason = should_exclude(file_path, exclude_patterns)
+                excluded, reason = should_exclude(file_path.relative_to(portable_path), exclude_patterns)
                 if excluded:
                     skipped_files += 1
                     exclude_reasons[reason] = exclude_reasons.get(reason, 0) + 1
@@ -269,8 +326,7 @@ def pack_portable(portable_path, output_path, compress=False, exclude_patterns=N
             packed_files += 1
 
             if packed_files % 1000 == 0:
-                pct = packed_files * 100 // max(total_files, 1)
-                print(f"[MMY]   进度：{packed_files}/{total_files} ({pct}%)...")
+                print(f"[MMY]   进度：已打包 {packed_files}，已跳过 {skipped_files}...")
 
     size_mb = output_path.stat().st_size / 1024 / 1024
 
@@ -286,6 +342,7 @@ def pack_portable(portable_path, output_path, compress=False, exclude_patterns=N
     print(f"[MMY] ✅ 打包完成！")
     print(f"[MMY]   文件：{output_path.name}")
     print(f"[MMY]   大小：{size_mb:.1f} MB")
+    total_files = packed_files + skipped_files
     print(f"[MMY]   已打包：{packed_files}  已跳过：{skipped_files}  总计：{total_files}")
     return output_path
 
