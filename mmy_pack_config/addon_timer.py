@@ -17,7 +17,6 @@ import sys
 import time
 import traceback
 import json
-import os
 import bpy
 from pathlib import Path
 from dataclasses import dataclass, asdict
@@ -34,6 +33,7 @@ class AddonLoadRecord:
     name: str
     elapsed: float
     error: str = ""
+    source: str = ""
 
 
 class AddonTimerManager:
@@ -44,7 +44,7 @@ class AddonTimerManager:
 
     # ---- 基础操作 ----
 
-    def record(self, name: str, elapsed: float, error: str = ""):
+    def record(self, name: str, elapsed: float, error: str = "", source: str = ""):
         """记录一条插件加载信息"""
         # 避免重复记录同名插件（保留耗时最长的那条）
         existing = next((r for r in self.records if r.name == name), None)
@@ -53,8 +53,10 @@ class AddonTimerManager:
                 existing.elapsed = elapsed
             if error and not existing.error:
                 existing.error = error
+            if source and not existing.source:
+                existing.source = source
         else:
-            self.records.append(AddonLoadRecord(name, elapsed, error))
+            self.records.append(AddonLoadRecord(name, elapsed, error, source))
 
     def get_records(self):
         return self.records
@@ -117,7 +119,7 @@ class AddonTimerManager:
                 err = traceback.format_exc()
 
             elapsed = time.perf_counter() - t0
-            manager.record(module_name, elapsed, err)
+            manager.record(module_name, elapsed, err, _detect_addon_source(module_name, mod))
 
             return mod
 
@@ -148,7 +150,7 @@ class AddonTimerManager:
                 for mod_name in prefs.keys():
                     if mod_name not in recorded_names:
                         if mod_name in sys.modules:
-                            manager.record(mod_name, 0.0, "")
+                            manager.record(mod_name, 0.0, "", _detect_addon_source(mod_name))
                             scanned += 1
                 print(f"[MMY] Fallback 扫描完成：发现 {scanned} 个早期插件")
             except Exception as e:
@@ -187,3 +189,132 @@ class AddonTimerManager:
 
 # 全局单例
 manager = AddonTimerManager()
+
+
+def _detect_addon_source(module_name: str, module=None) -> str:
+    """尽量识别插件来源，用于 UI 默认屏蔽 Blender 内置/官方项。"""
+    if module_name.startswith("bl_ext.blender_org."):
+        return "official"
+
+    module = module or sys.modules.get(module_name)
+    module_file = getattr(module, "__file__", "") if module else ""
+    if not module_file:
+        if module_name in _KNOWN_BLENDER_ADDONS:
+            return "official"
+        return ""
+
+    try:
+        module_path = Path(module_file).resolve()
+    except Exception:
+        module_path = Path(module_file)
+
+    if _is_under_blender_system_scripts(module_path):
+        return "official"
+
+    path_text = module_path.as_posix().lower()
+    if "/extensions/blender_org/" in path_text or "\\extensions\\blender_org\\" in path_text:
+        return "official"
+
+    return "user"
+
+
+def is_blender_official_addon(record: AddonLoadRecord) -> bool:
+    """判断记录是否属于 Blender 内置或官方扩展。"""
+    if record.source == "official":
+        return True
+
+    name = _clean_record_name(record.name)
+    if name.startswith("bl_ext.blender_org."):
+        return True
+
+    if name in _KNOWN_BLENDER_ADDONS:
+        return True
+
+    module = sys.modules.get(name)
+    if module:
+        return _detect_addon_source(name, module) == "official"
+
+    return False
+
+
+def _clean_record_name(name: str) -> str:
+    return name.replace("addon_utils: ", "")
+
+
+def _is_under_blender_system_scripts(module_path: Path) -> bool:
+    try:
+        system_scripts = Path(bpy.utils.system_resource("SCRIPTS")).resolve()
+    except Exception:
+        return False
+
+    try:
+        module_path.relative_to(system_scripts)
+        return True
+    except ValueError:
+        return False
+
+
+_KNOWN_BLENDER_ADDONS = {
+    "add_curve_extra_objects",
+    "add_mesh_extra_objects",
+    "amaranth",
+    "animation_animall",
+    "archimesh",
+    "bl_pkg",
+    "btrace",
+    "camera_turnaround",
+    "copy_global_transform",
+    "curve_assign_shapekey",
+    "curve_simplify",
+    "cycles",
+    "development_edit_operator",
+    "extra_curve_objectes",
+    "extra_mesh_objects",
+    "io_anim_bvh",
+    "io_curve_svg",
+    "io_import_images_as_planes",
+    "io_mesh_ply",
+    "io_mesh_stl",
+    "io_mesh_uv_layout",
+    "io_scene_3ds",
+    "io_scene_fbx",
+    "io_scene_gltf2",
+    "io_scene_obj",
+    "io_scene_x3d",
+    "lighting_dynamic_sky",
+    "magic_uv",
+    "materials_library_vx",
+    "measureit",
+    "mesh_auto_mirror",
+    "mesh_f2",
+    "mesh_looptools",
+    "mesh_snap_utilities_line",
+    "node_arrange",
+    "node_wrangler",
+    "object_boolean_tools",
+    "object_carver",
+    "object_collection_manager",
+    "object_color_rules",
+    "object_edit_linked",
+    "object_fracture_cell",
+    "object_print3d_utils",
+    "object_scatter",
+    "paint_palette",
+    "pose_library",
+    "power_sequencer",
+    "render_copy_settings",
+    "rigify",
+    "space_clip_editor_refine_solution",
+    "space_view3d_3d_navigation",
+    "space_view3d_align_tools",
+    "space_view3d_brush_menus",
+    "space_view3d_copy_attributes",
+    "space_view3d_math_vis",
+    "space_view3d_pie_menus",
+    "stored_views",
+    "storypencil",
+    "sun_position",
+    "system_blend_info",
+    "ui_translate",
+    "viewport_vr_preview",
+}

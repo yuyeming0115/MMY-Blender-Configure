@@ -1,7 +1,7 @@
 bl_info = {
     "name": "MMY Blender Configure（Portable配置打包输出）",
     "author": "会叫喵的鱼",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "blender": (4, 5, 0),
     "category": "MMY-Tools",
     "description": "Blender Portable 配置打包 + 插件加载耗时监控",

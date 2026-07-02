@@ -12,6 +12,7 @@ import os
 import re
 from pathlib import Path
 from datetime import datetime
+from .path_memory import save_path_memory
 
 
 _PACK_SCRIPT = Path(__file__).parent / "pack_script.py"
@@ -148,6 +149,9 @@ class MMY_OT_PackPortable(bpy.types.Operator):
         if prefs:
             try:
                 prefs.preferences.last_portable_path = str(portable_path)
+                prefs.preferences.pack_output_path = str(output_path.parent)
+                save_path_memory(str(portable_path), str(output_path.parent))
+
                 import json
                 config_path = Path(__file__).parent.parent / ".pack_config.json"
                 config = {}
@@ -155,6 +159,7 @@ class MMY_OT_PackPortable(bpy.types.Operator):
                     with open(config_path, "r", encoding="utf-8") as f:
                         config = json.load(f)
                 config["last_portable_path"] = str(portable_path)
+                config["last_output_dir"] = str(output_path.parent)
                 with open(config_path, "w", encoding="utf-8") as f:
                     json.dump(config, f, indent=2, ensure_ascii=False)
             except Exception as e:
