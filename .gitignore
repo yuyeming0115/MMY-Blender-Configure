@@ -32,6 +32,7 @@ desktop.ini
 # MMY 项目配置
 .pack_config.json
 .mmy_timer_data.json
+.mmy_timer_probe_data.json
 
 # 打包输出
 releases/

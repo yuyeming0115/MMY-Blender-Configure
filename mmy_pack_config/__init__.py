@@ -8,12 +8,14 @@ bl_info = {
     "location": "顶部菜单栏左侧 + 偏好设置 > MMY Blender Configure",
 }
 
-from . import preferences, ui, addon_timer
+from . import preferences, ui, addon_timer, auto_pack
 
 
 def register():
-    # 1. 加载上一次的监控数据（重启后仍可查看）
+    # 1. 开启本次监控会话，并加载上一次的监控数据用于临时展示
+    addon_timer.manager.begin_session()
     addon_timer.manager.load_data()
+    addon_timer.manager.load_probe_data()
 
     # 2. 注入 monkey-patch（捕获后续加载的插件）
     addon_timer.manager.patch()
@@ -21,12 +23,14 @@ def register():
     # 3. 注册 fallback 扫描（2秒后扫描已加载但未捕获的插件）
     addon_timer.manager.register_fallback()
 
-    # 4. 注册 UI 和偏好设置
+    # 4. 注册 UI、偏好设置和每周自动打包检查
     preferences.register()
     ui.register()
+    auto_pack.register()
 
 
 def unregister():
+    auto_pack.unregister()
     ui.unregister()
     preferences.unregister()
     addon_timer.manager.unpatch()
