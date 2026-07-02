@@ -1,0 +1,68 @@
+# MMY Blender Configure — 自动发布 Release
+# 触发方式：推送版本 tag（如 git push v1.0.0）
+# 自动执行：打包插件 → 创建 GitHub Release（带 tag + 版本号 + zip 附件）
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 打包并发布 Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 安装依赖
+        run: |
+          # pack.py 仅使用标准库（zipfile, pathlib, re），无需额外依赖
+          echo "pack.py 使用 Python 标准库，跳过 pip install"
+
+      - name: 执行打包
+        id: pack
+        run: |
+          python pack.py
+          echo "zip_file=$(ls releases/*.zip | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: 提取版本号
+        id: version
+        run: |
+          # 从 tag 名提取版本号，如 v1.0.0 → 1.0.0
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "MMY Blender Toolkit v${{ steps.version.outputs.version }}"
+          body: |
+            ## MMY Blender Configure v${{ steps.version.outputs.version }}
+
+            **Blender 配置备份、导入、导出及插件耗时监控插件**
+
+            ### 安装方式
+            1. 下载下方 `Assets` 中的 zip 文件
+            2. 打开 Blender → 编辑 → 偏好设置 → 插件 → 安装
+            3. 选择下载的 zip 文件 → 启用「MMY Blender Configure」
+
+            ### 版本信息
+            - 版本：v${{ steps.version.outputs.version }}
+            - 兼容 Blender：4.5+
+          files: ${{ steps.pack.outputs.zip_file }}
+          draft: false
+          prerelease: false
