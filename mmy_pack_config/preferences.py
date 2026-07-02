@@ -9,7 +9,7 @@ MMY Blender Configure — 偏好设置面板
 import bpy
 import json
 from pathlib import Path
-from .addon_timer import manager
+from .addon_timer import manager, is_blender_official_addon
 
 
 # ============================================================
@@ -44,6 +44,17 @@ def _fmt_time(elapsed):
         return f"{elapsed:.4f}s"
 
 
+def _parse_hidden_prefixes(raw_text):
+    """解析用户输入的额外隐藏模块名前缀。"""
+    return tuple(p.strip() for p in raw_text.split(",") if p.strip())
+
+
+def _matches_prefix(name, prefixes):
+    """判断记录名是否命中额外隐藏前缀。"""
+    clean_name = name.replace("addon_utils: ", "")
+    return any(clean_name.startswith(prefix) for prefix in prefixes)
+
+
 class MMYConfigPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
@@ -68,6 +79,23 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
     show_early_addons: bpy.props.BoolProperty(
         name="显示早期加载插件列表",
         default=False,
+    )
+
+    show_all_timed_addons: bpy.props.BoolProperty(
+        name="展开全部计时插件",
+        default=False,
+    )
+
+    hide_blender_official_addons: bpy.props.BoolProperty(
+        name="隐藏 Blender 内置/官方插件",
+        description="默认屏蔽 Blender 自带插件和 bl_ext.blender_org 官方扩展，便于观察自研和第三方插件耗时",
+        default=True,
+    )
+
+    hidden_addon_prefixes: bpy.props.StringProperty(
+        name="额外隐藏前缀",
+        description="用英文逗号分隔模块名前缀，例如 bl_ext.user_default.",
+        default="",
     )
 
     # ---------- 绘制面板 ----------
@@ -101,6 +129,29 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
                 return
             records = manager.get_records()
 
+        all_records = records
+        hidden_records = []
+        if self.hide_blender_official_addons:
+            hidden_records.extend([r for r in all_records if is_blender_official_addon(r)])
+
+        extra_prefixes = _parse_hidden_prefixes(self.hidden_addon_prefixes)
+        if extra_prefixes:
+            hidden_ids = {id(r) for r in hidden_records}
+            hidden_records.extend([
+                r for r in all_records
+                if id(r) not in hidden_ids and _matches_prefix(r.name, extra_prefixes)
+            ])
+
+        hidden_ids = {id(r) for r in hidden_records}
+        records = [r for r in all_records if id(r) not in hidden_ids]
+
+        filter_box = box.column(align=True)
+        filter_row = filter_box.row(align=True)
+        filter_row.prop(self, "hide_blender_official_addons")
+        if hidden_records:
+            filter_row.label(text=f"已屏蔽 {len(hidden_records)}", icon='HIDE_ON')
+        filter_box.prop(self, "hidden_addon_prefixes")
+
         # 分类
         timed = [r for r in records if r.elapsed > 0]
         early = [r for r in records if r.elapsed == 0 and not r.error]
@@ -124,13 +175,22 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
             col_left = split.column(align=True)
             col_right = split.column(align=True)
 
-            for i, rec in enumerate(sorted_timed[:30]):
+            visible_timed = sorted_timed if self.show_all_timed_addons else sorted_timed[:30]
+
+            for i, rec in enumerate(visible_timed):
                 target = col_left if i % 2 == 0 else col_right
                 self._draw_rainbow_cell(target, rec, rank=i + 1)
 
             if len(sorted_timed) > 30:
-                sub = box.column()
-                sub.label(text=f"... 还有 {len(sorted_timed) - 30} 个", icon='BLANK1')
+                remain_count = len(sorted_timed) - 30
+                expand = box.row(align=True)
+                expand.prop(
+                    self,
+                    "show_all_timed_addons",
+                    text="收起列表" if self.show_all_timed_addons else f"还有 {remain_count} 个，点击展开",
+                    icon='DISCLOSURE_TRI_DOWN' if self.show_all_timed_addons else 'DISCLOSURE_TRI_RIGHT',
+                    emboss=False,
+                )
 
         # ---- 异常插件 ----
         if errors_list:
