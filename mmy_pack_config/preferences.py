@@ -10,6 +10,7 @@ import bpy
 import json
 from pathlib import Path
 from .addon_timer import manager, is_blender_official_addon
+from .path_memory import apply_path_memory, save_path_memory
 
 
 # ============================================================
@@ -64,6 +65,7 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
         description="上次打包时选择的 portable 文件夹（自动记录）",
         subtype='DIR_PATH',
         default="",
+        update=lambda self, ctx: _on_path_memory_changed(self),
     )
 
     # ---------- 打包输出路径 ----------
@@ -72,7 +74,7 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
         description="打包时的默认输出目录。留空则每次手动选择",
         subtype='DIR_PATH',
         default="",
-        update=lambda self, ctx: _on_pack_output_path_changed(self),
+        update=lambda self, ctx: _on_path_memory_changed(self),
     )
 
     # ---------- 展开控制 ----------
@@ -260,9 +262,14 @@ def _chip(row, text, icon):
 
 
 # ============================================================
-# pack_output_path 变化时同步写入 .pack_config.json
+# 路径变化时同步写入 presets 和旧版 .pack_config.json
 # ============================================================
-def _on_pack_output_path_changed(self):
+def _on_path_memory_changed(self):
+    save_path_memory(
+        last_portable_path=self.last_portable_path,
+        pack_output_path=self.pack_output_path,
+    )
+
     config_path = Path(__file__).parent.parent / ".pack_config.json"
 
     config = {}
@@ -273,9 +280,10 @@ def _on_pack_output_path_changed(self):
         except Exception:
             pass
 
-    output_path = self.pack_output_path
-    if output_path and Path(output_path).exists():
-        config["last_output_dir"] = output_path
+    if self.last_portable_path:
+        config["last_portable_path"] = self.last_portable_path
+    if self.pack_output_path:
+        config["last_output_dir"] = self.pack_output_path
 
     try:
         with open(config_path, "w", encoding="utf-8") as f:
@@ -293,6 +301,12 @@ classes = (MMYConfigPreferences,)
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    try:
+        prefs = bpy.context.preferences.addons.get(__package__)
+        if prefs:
+            apply_path_memory(prefs.preferences)
+    except Exception as e:
+        print(f"[MMY] 加载路径预设失败: {e}")
 
 
 def unregister():
