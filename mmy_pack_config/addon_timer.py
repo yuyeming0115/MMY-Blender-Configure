@@ -17,7 +17,11 @@ import sys
 import time
 import traceback
 import json
+import threading
 import bpy
+
+# 保护耗时数据文件写入，避免后台线程与同步写盘并发
+_SAVE_LOCK = threading.Lock()
 from pathlib import Path
 from dataclasses import dataclass, asdict, fields
 
@@ -85,19 +89,37 @@ class AddonTimerManager:
 
     # ---- 持久化 ----
 
-    def save_data(self):
-        """将当前记录保存到 JSON 文件"""
+    def save_data(self, background=False):
+        """将当前记录保存到 JSON 文件。
+
+        background=True 时把磁盘写入放到守护线程，避免在主线程
+        （例如 2 秒后的 fallback 扫描回调中）阻塞 UI 造成可见卡顿。
+        """
         if not self.records:
             print("[MMY] 当前会话暂无耗时数据，跳过保存")
             return
 
-        try:
-            data = [asdict(r) for r in self.records]
-            with open(DATA_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            print(f"[MMY] 耗时数据已保存 ({len(self.records)} 条)")
-        except Exception as e:
-            print(f"[MMY] 保存耗时数据失败: {e}")
+        # 在主线程先快照数据，再交给后台线程写盘，避免并发修改 self.records
+        data = [asdict(r) for r in self.records]
+        count = len(data)
+
+        def _write():
+            try:
+                with _SAVE_LOCK:
+                    with open(DATA_FILE, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2, ensure_ascii=False)
+                print(f"[MMY] 耗时数据已保存 ({count} 条)")
+            except Exception as e:
+                print(f"[MMY] 保存耗时数据失败: {e}")
+
+        if background:
+            try:
+                threading.Thread(target=_write, daemon=True).start()
+                return
+            except Exception:
+                # 线程起不来就退回同步写盘，保证数据不丢
+                pass
+        _write()
 
     def load_data(self):
         """从 JSON 文件加载历史数据"""
@@ -273,8 +295,8 @@ class AddonTimerManager:
             except Exception as e:
                 print(f"[MMY] Fallback 扫描异常: {e}")
 
-            # 扫描完成后保存数据
-            manager.save_data()
+            # 扫描完成后保存数据（后台写盘，避免 2 秒后主线程卡顿）
+            manager.save_data(background=True)
             return None  # 只执行一次
 
         try:
@@ -466,6 +488,17 @@ def _install():
     _timed_enable._mmy_startup_probe = True
     addon_utils.enable = _timed_enable
     print("[MMY Probe] startup addon timer installed")
+
+
+def register():
+    # 空 register/unregister：Blender 启动脚本加载器会对 startup 目录下的脚本
+    # 检查 register 函数，缺失会报 "has no register function" 警告。
+    # 实际计时逻辑已在模块导入时通过 _install() 完成，此处仅用于消除警告。
+    pass
+
+
+def unregister():
+    pass
 
 
 _install()

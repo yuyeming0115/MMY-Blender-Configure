@@ -209,6 +209,13 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
         default=False,
     )
 
+    # ---------- 加载耗时监控开关 ----------
+    enable_load_monitoring: bpy.props.BoolProperty(
+        name="启用插件加载耗时监控",
+        description="开启后会在启动期 monkey-patch 并计时各插件加载耗时（带来轻微启动开销，且界面出现约 2 秒后会做一次延迟扫描+写盘）。关闭则零开销启动，但不再采集新数据。需要时开启，重启 Blender 生效",
+        default=True,
+    )
+
     # ---------- 展开控制 ----------
     show_early_addons: bpy.props.BoolProperty(
         name="显示早期加载插件列表",
@@ -274,6 +281,11 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
         """双列布局 + 彩虹色表示耗时长短"""
         box = layout.box()
         box.label(text="插件加载耗时", icon='TIME')
+        box.prop(self, "enable_load_monitoring")
+        if not self.enable_load_monitoring:
+            box.label(text="监控已关闭：本次启动未采集数据（零启动开销）", icon='INFO')
+            box.label(text="需采集时勾选上方开关并重启 Blender", icon='BLANK1')
+            return
         self._draw_timer_tools(box)
 
         records, using_history = manager.get_display_records()
