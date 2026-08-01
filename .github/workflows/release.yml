@@ -34,8 +34,11 @@ jobs:
       - name: 执行打包
         id: pack
         run: |
+          # 清空 releases/ 下所有旧 zip，避免历史残留包被误选（曾因此把 v1.1.1 旧包发到 v1.1.3）
+          rm -f releases/*.zip 2>/dev/null || true
           python pack.py
-          echo "zip_file=$(ls releases/*.zip | head -1)" >> "$GITHUB_OUTPUT"
+          # 按当前 tag 版本号精确匹配，杜绝字母序误选旧版本
+          echo "zip_file=$(ls releases/*v${GITHUB_REF_NAME#v}*.zip | head -1)" >> "$GITHUB_OUTPUT"
 
       - name: 提取版本号
         id: version
