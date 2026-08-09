@@ -56,7 +56,7 @@ jobs:
           body: |
             ## MMY Blender Configure v${{ steps.version.outputs.version }}
 
-            **Blender 配置备份、导入、导出及插件耗时监控插件**
+            **Blender 跨版本配置迁移、Portable 配置打包及插件耗时监控工具**
 
             ### 安装方式
             1. 下载下方 `Assets` 中的 zip 文件
@@ -66,6 +66,7 @@ jobs:
             ### 版本信息
             - 版本：v${{ steps.version.outputs.version }}
             - 兼容 Blender：4.5+
+            - 跨版本一键迁移：Windows 普通安装与 Portable
           files: ${{ steps.pack.outputs.zip_file }}
           draft: false
           prerelease: false

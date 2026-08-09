@@ -734,7 +734,7 @@
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"></path>
                     </svg>
-                    更新于 2026-05-22
+                    更新于 2026-08-10
                 </div>
             </header>
 
@@ -903,14 +903,14 @@
                             <span class="card-title">扩展 (extensions)</span>
                             <span class="card-status status-risky">谨慎导出</span>
                         </div>
-                        <div class="card-path">extensions/ (Blender 4.5+)</div>
-                        <p class="card-desc">Blender 4.5+ 新增的官方扩展系统</p>
+                        <div class="card-path">extensions/ (Blender 4.2+)</div>
+                        <p class="card-desc">Blender 4.2 引入的官方扩展系统</p>
                         <ul class="card-list">
                             <li>官方扩展：通过扩展平台安装</li>
-                            <li>仅 4.5+ 存在此系统</li>
+                            <li>跨版本复制后应由目标 Blender 验证兼容性</li>
                         </ul>
                         <table class="card-table">
-                            <tr><td>版本兼容</td><td><span class="risk-badge risk-extreme">禁止</span></td></tr>
+                            <tr><td>版本兼容</td><td><span class="risk-badge risk-high">高风险</span></td></tr>
                             <tr><td>跨机识别</td><td><span class="risk-badge risk-low">低风险</span> (同版本)</tr>
                         </table>
                     </div>
@@ -990,8 +990,8 @@
                             <td><span class="risk-badge risk-extreme">禁止</span></td>
                         </tr>
                         <tr>
-                            <td>4.4 → 4.5</td>
-                            <td>新增扩展系统 (extensions)</td>
+                            <td>4.1 → 4.2</td>
+                            <td>引入扩展平台 (extensions)</td>
                             <td>extensions</td>
                             <td><span class="risk-badge risk-medium">中风险</span></td>
                         </tr>
@@ -1136,7 +1136,7 @@ config_dir = Path(<span class="code-function">bpy.utils.user_resource</span>(<sp
 <span class="code-comment"># 插件目录</span>
 addons_dir = Path(<span class="code-function">bpy.utils.user_resource</span>(<span class="code-string">'SCRIPTS'</span>, path=<span class="code-string">'addons'</span>))
 
-<span class="code-comment"># 扩展目录 (4.5+)</span>
+<span class="code-comment"># 扩展目录 (4.2+)</span>
 extensions_dir = Path(<span class="code-function">bpy.utils.user_resource</span>(<span class="code-string">'EXTENSIONS'</span>))
                 </code></div>
 
@@ -1192,7 +1192,7 @@ enabled_addons = list(<span class="code-keyword">bpy</span>.context.preferences.
 
             <!-- 页脚 -->
             <footer class="page-footer">
-                <p>更新时间：2026-05-22 | 项目：<a href="https://github.com/yuyeming0115/MMY-Blender-Configure">MMY Blender Configure</a></p>
+                <p>更新时间：2026-08-10 | 项目：<a href="https://github.com/yuyeming0115/MMY-Blender-Configure">MMY Blender Configure</a></p>
                 <p style="margin-top: 8px;">参考来源：Blender 官方文档、StackExchange、Reddit、社区实践</p>
             </footer>
         </main>
