@@ -193,6 +193,68 @@ class MMY_OT_PackPortable(bpy.types.Operator):
 
 
 # ============================================================
+# 配置管理总入口
+# ============================================================
+
+class MMY_OT_OpenConfigManager(bpy.types.Operator):
+    bl_idname = "mmy.open_config_manager"
+    bl_label = "MMY 配置管理"
+    bl_description = "Portable 打包、跨版本迁移与恢复"
+    bl_options = {"INTERNAL"}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=460)
+
+    def execute(self, context):
+        return {"FINISHED"}
+
+    def draw(self, context):
+        layout = self.layout
+
+        portable_box = layout.box()
+        portable_box.label(text="Portable 配置", icon='PACKAGE')
+        portable_box.operator(
+            "mmy.pack_portable",
+            text="打包 Portable 配置",
+            icon='PACKAGE',
+        )
+
+        migration_box = layout.box()
+        migration_box.label(text="跨版本迁移", icon='FILE_REFRESH')
+        row = migration_box.row(align=True)
+        row.operator(
+            "mmy.migrate_to_blender",
+            text="迁移到新版",
+            icon='FILE_REFRESH',
+        )
+        row.operator(
+            "mmy.export_migration_profile",
+            text="导出配置包",
+            icon='EXPORT',
+        )
+
+        recovery_box = layout.box()
+        recovery_box.label(text="恢复与报告", icon='RECOVER_LAST')
+        row = recovery_box.row(align=True)
+        row.operator(
+            "mmy.restore_migration_backup",
+            text="恢复迁移前配置",
+            icon='RECOVER_LAST',
+        )
+        report_row = row.row(align=True)
+        addon = context.preferences.addons.get(__package__)
+        has_report = bool(
+            addon and getattr(addon.preferences, "last_migration_report", "")
+        )
+        report_row.enabled = has_report
+        report_row.operator(
+            "mmy.open_migration_report",
+            text="打开报告",
+            icon='TEXT',
+        )
+
+
+# ============================================================
 # 注册到顶部菜单栏
 # ============================================================
 
@@ -200,11 +262,12 @@ def draw_pack_button(self, context):
     layout = self.layout
     row = layout.row(align=True)
     row.scale_x = 0.85
-    row.operator("mmy.pack_portable", text="打包导出", icon="PACKAGE")
+    row.operator("mmy.open_config_manager", text="配置管理", icon="PREFERENCES")
 
 
 def register():
     bpy.utils.register_class(MMY_OT_PackPortable)
+    bpy.utils.register_class(MMY_OT_OpenConfigManager)
     try:
         bpy.types.TOPBAR_MT_editor_menus.append(draw_pack_button)
     except Exception as e:
@@ -214,6 +277,10 @@ def register():
 def unregister():
     try:
         bpy.types.TOPBAR_MT_editor_menus.remove(draw_pack_button)
+    except Exception:
+        pass
+    try:
+        bpy.utils.unregister_class(MMY_OT_OpenConfigManager)
     except Exception:
         pass
     try:

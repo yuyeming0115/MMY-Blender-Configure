@@ -1,0 +1,1047 @@
+"""Blender 跨版本配置迁移的纯 Python 核心。
+
+本模块不依赖 ``bpy``，负责配置快照、目标探测、安全解压、事务切换、
+后台审计编排和恢复，因此可以在 Blender 外直接做单元测试。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import stat
+import subprocess
+import uuid
+import zipfile
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path, PurePosixPath
+from typing import Any, Iterable
+
+
+SCHEMA_VERSION = 2
+PROFILE_PREFIX = "MMY_Blender_Profile"
+RECOVERY_DIR_NAME = "MMY_Migration_Recovery"
+PROBE_MARKER = "MMY_PROBE_JSON:"
+MIN_FREE_SPACE_BYTES = 128 * 1024 * 1024
+
+
+class MigrationError(RuntimeError):
+    """可向用户展示的迁移错误。"""
+
+    def __init__(self, message: str, recovery_dir: Path | None = None):
+        super().__init__(message)
+        self.recovery_dir = recovery_dir
+
+
+@dataclass(frozen=True)
+class SourceSnapshot:
+    version: tuple[int, int, int]
+    platform: str
+    install_mode: str
+    binary_path: Path
+    user_root: Path
+    config_dir: Path
+    scripts_dir: Path
+    datafiles_dir: Path
+    extensions_dir: Path
+    keymap_export_path: Path
+    keymap_fingerprint_path: Path
+    keymap_item_count: int
+    addons: list[dict[str, Any]]
+    include_presets: bool = True
+    include_datafiles: bool = False
+    include_startup_scripts: bool = False
+    include_history: bool = False
+
+
+@dataclass
+class ProfileResult:
+    path: Path
+    manifest: dict[str, Any]
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class MigrationResult:
+    status: str
+    profile_path: Path
+    recovery_dir: Path
+    report_path: Path
+    target_version: tuple[int, int, int]
+    disabled_addons: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+def _timestamp() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _run_id() -> str:
+    return f"{_timestamp()}_{uuid.uuid4().hex[:8]}"
+
+
+def version_string(version: Iterable[int]) -> str:
+    values = list(version)
+    return ".".join(str(value) for value in values[:3])
+
+
+def normalize_version(value: Iterable[int]) -> tuple[int, int, int]:
+    values = [int(part) for part in value]
+    values.extend([0] * (3 - len(values)))
+    return tuple(values[:3])
+
+
+def validate_forward_version(
+    source: Iterable[int], target: Iterable[int]
+) -> tuple[int, int, int]:
+    source_version = normalize_version(source)
+    target_version = normalize_version(target)
+    if source_version[0] != target_version[0]:
+        raise MigrationError(
+            f"仅支持同主版本迁移：当前 {version_string(source_version)}，"
+            f"目标 {version_string(target_version)}"
+        )
+    if target_version <= source_version:
+        raise MigrationError(
+            f"目标版本必须高于当前版本：当前 {version_string(source_version)}，"
+            f"目标 {version_string(target_version)}"
+        )
+    return target_version
+
+
+def _resolved(path: Path | str) -> Path:
+    return Path(path).expanduser().resolve(strict=False)
+
+
+def path_is_within(path: Path | str, parent: Path | str) -> bool:
+    try:
+        _resolved(path).relative_to(_resolved(parent))
+        return True
+    except ValueError:
+        return False
+
+
+def ensure_external_output(output_dir: Path, protected_roots: Iterable[Path]) -> Path:
+    output = _resolved(output_dir)
+    for root in protected_roots:
+        if root and path_is_within(output, root):
+            raise MigrationError(f"迁移输出目录不能位于 Blender 用户目录内部：{output}")
+    output.mkdir(parents=True, exist_ok=True)
+    return output
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def directory_size(path: Path) -> int:
+    if not path.exists():
+        return 0
+    total = 0
+    for item in path.rglob("*"):
+        try:
+            if item.is_file() and not item.is_symlink():
+                total += item.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def ensure_free_space(path: Path, required_bytes: int) -> None:
+    probe = path if path.exists() else path.parent
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    free = shutil.disk_usage(probe).free
+    required = max(int(required_bytes), MIN_FREE_SPACE_BYTES)
+    if free < required:
+        raise MigrationError(
+            f"磁盘空间不足：需要约 {required / 1024 / 1024:.0f} MB，"
+            f"可用 {free / 1024 / 1024:.0f} MB"
+        )
+
+
+_SKIP_DIR_NAMES = {
+    "__pycache__",
+    ".cache",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "cacheddata",
+    "code cache",
+    "gpucache",
+    "crashpad",
+    ".git",
+    ".hg",
+    ".svn",
+}
+_SKIP_SUFFIXES = {
+    ".pyc",
+    ".pyo",
+    ".log",
+    ".tmp",
+    ".temp",
+    ".bak",
+    ".backup",
+    ".old",
+    ".blend1",
+    ".blend2",
+    ".blend3",
+    ".part",
+    ".crdownload",
+}
+_SKIP_FILE_NAMES = {".ds_store", "thumbs.db", "desktop.ini"}
+
+
+def should_skip_snapshot_file(relative_path: Path) -> bool:
+    parts = {part.casefold() for part in relative_path.parts[:-1]}
+    name = relative_path.name.casefold()
+    return bool(
+        parts.intersection(_SKIP_DIR_NAMES)
+        or name in _SKIP_FILE_NAMES
+        or name.startswith("._")
+        or relative_path.suffix.casefold() in _SKIP_SUFFIXES
+    )
+
+
+def _iter_regular_files(source: Path) -> Iterable[tuple[Path, Path]]:
+    if not source.exists():
+        return
+    for item in sorted(source.rglob("*"), key=lambda value: str(value).casefold()):
+        if item.is_symlink() or not item.is_file():
+            continue
+        relative = item.relative_to(source)
+        if not should_skip_snapshot_file(relative):
+            yield item, relative
+
+
+def _safe_archive_path(name: str) -> PurePosixPath:
+    if not name or "\\" in name:
+        raise MigrationError(f"压缩包包含非法路径：{name!r}")
+    path = PurePosixPath(name)
+    if path.is_absolute() or ".." in path.parts or ":" in path.parts[0]:
+        raise MigrationError(f"压缩包包含越界路径：{name}")
+    return path
+
+
+def _zipinfo_is_symlink(info: zipfile.ZipInfo) -> bool:
+    mode = info.external_attr >> 16
+    return stat.S_ISLNK(mode)
+
+
+def _json_dump(data: Any) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def _profile_sources(snapshot: SourceSnapshot) -> list[tuple[Path, str, str]]:
+    sources: list[tuple[Path, str, str]] = [
+        (snapshot.config_dir / "userpref.blend", "payload/config/userpref.blend", "preferences"),
+        (snapshot.config_dir / "startup.blend", "payload/config/startup.blend", "startup_file"),
+        (snapshot.scripts_dir / "addons", "payload/scripts/addons", "addons"),
+        (snapshot.extensions_dir, "payload/extensions", "extensions"),
+    ]
+    if snapshot.include_presets:
+        sources.append((snapshot.scripts_dir / "presets", "payload/scripts/presets", "presets"))
+    if snapshot.include_datafiles:
+        sources.append((snapshot.datafiles_dir, "payload/datafiles", "datafiles"))
+    if snapshot.include_startup_scripts:
+        sources.append((snapshot.scripts_dir / "startup", "payload/scripts/startup", "startup_scripts"))
+    if snapshot.include_history:
+        sources.extend(
+            [
+                (snapshot.config_dir / "bookmarks.txt", "payload/config/bookmarks.txt", "history"),
+                (snapshot.config_dir / "recent-files.txt", "payload/config/recent-files.txt", "history"),
+            ]
+        )
+    return sources
+
+
+def create_profile(snapshot: SourceSnapshot, output_dir: Path) -> ProfileResult:
+    output = ensure_external_output(
+        output_dir,
+        [
+            snapshot.user_root,
+            snapshot.config_dir,
+            snapshot.scripts_dir,
+            snapshot.datafiles_dir,
+            snapshot.extensions_dir,
+        ],
+    )
+    version = version_string(snapshot.version)
+    profile_path = output / f"{PROFILE_PREFIX}_v{version}_{_timestamp()}.zip"
+    counter = 1
+    while profile_path.exists():
+        profile_path = output / f"{PROFILE_PREFIX}_v{version}_{_timestamp()}_({counter}).zip"
+        counter += 1
+
+    if not (snapshot.config_dir / "userpref.blend").is_file():
+        raise MigrationError("未找到 userpref.blend，请先保存 Blender 偏好设置")
+    if not snapshot.keymap_export_path.is_file():
+        raise MigrationError("快捷键导出文件不存在")
+    if not snapshot.keymap_fingerprint_path.is_file():
+        raise MigrationError("快捷键指纹文件不存在")
+
+    files: list[dict[str, Any]] = []
+    components: set[str] = set()
+    warnings: list[str] = []
+    archive_names: set[str] = set()
+
+    def add_file(zf: zipfile.ZipFile, source: Path, archive_name: str, component: str) -> None:
+        archive_name = str(_safe_archive_path(archive_name))
+        if archive_name in archive_names:
+            raise MigrationError(f"配置快照内路径重复：{archive_name}")
+        archive_names.add(archive_name)
+        digest = hashlib.sha256()
+        size = 0
+        with source.open("rb") as source_handle, zf.open(
+            archive_name,
+            "w",
+            force_zip64=True,
+        ) as archive_handle:
+            for chunk in iter(lambda: source_handle.read(1024 * 1024), b""):
+                archive_handle.write(chunk)
+                digest.update(chunk)
+                size += len(chunk)
+        files.append(
+            {
+                "path": archive_name,
+                "size": size,
+                "sha256": digest.hexdigest(),
+                "component": component,
+            }
+        )
+        components.add(component)
+
+    try:
+        with zipfile.ZipFile(profile_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+            for source, archive_base, component in _profile_sources(snapshot):
+                if source.is_symlink():
+                    warnings.append(f"已跳过符号链接：{source}")
+                    continue
+                if source.is_file():
+                    add_file(zf, source, archive_base, component)
+                    continue
+                if source.is_dir():
+                    found = False
+                    for item, relative in _iter_regular_files(source):
+                        found = True
+                        add_file(
+                            zf,
+                            item,
+                            f"{archive_base}/{relative.as_posix()}",
+                            component,
+                        )
+                    if not found:
+                        warnings.append(f"目录为空或不存在可迁移文件：{source}")
+                    continue
+                if component in {"startup_file", "addons", "extensions"}:
+                    warnings.append(f"来源组件不存在：{source}")
+
+            add_file(
+                zf,
+                snapshot.keymap_export_path,
+                "fallback/keymap.py",
+                "keymap_fallback",
+            )
+            add_file(
+                zf,
+                snapshot.keymap_fingerprint_path,
+                "fallback/keymap_fingerprint.json",
+                "keymap_fallback",
+            )
+
+            manifest = {
+                "schema_version": SCHEMA_VERSION,
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "source": {
+                    "blender_version": list(normalize_version(snapshot.version)),
+                    "platform": snapshot.platform,
+                    "install_mode": snapshot.install_mode,
+                },
+                "target_policy": {
+                    "forward_only": True,
+                    "same_major_only": True,
+                },
+                "components": sorted(components),
+                "addons": snapshot.addons,
+                "keymap": {
+                    "item_count": snapshot.keymap_item_count,
+                    "fingerprint_file": "fallback/keymap_fingerprint.json",
+                    "export_file": "fallback/keymap.py",
+                },
+                "files": files,
+                "warnings": warnings,
+            }
+            zf.writestr("manifest.json", _json_dump(manifest))
+    except Exception:
+        profile_path.unlink(missing_ok=True)
+        raise
+
+    return ProfileResult(path=profile_path, manifest=manifest, warnings=warnings)
+
+
+def read_profile_manifest(profile_path: Path) -> dict[str, Any]:
+    try:
+        with zipfile.ZipFile(profile_path, "r") as zf:
+            manifest_entries = [
+                info for info in zf.infolist() if info.filename == "manifest.json"
+            ]
+            if len(manifest_entries) != 1:
+                raise MigrationError("配置快照必须且只能包含一个 manifest.json")
+            info = manifest_entries[0]
+            if _zipinfo_is_symlink(info):
+                raise MigrationError("manifest.json 不能是符号链接")
+            manifest = json.loads(zf.read(info).decode("utf-8"))
+    except (OSError, zipfile.BadZipFile, KeyError, UnicodeError, json.JSONDecodeError) as exc:
+        raise MigrationError(f"无效的配置快照：{exc}") from exc
+    if manifest.get("schema_version") != SCHEMA_VERSION:
+        raise MigrationError(
+            f"不支持的配置快照版本：{manifest.get('schema_version')}"
+        )
+    if not isinstance(manifest.get("files"), list):
+        raise MigrationError("配置快照缺少文件清单")
+    return manifest
+
+
+def extract_profile(
+    profile_path: Path,
+    staging_root: Path,
+    fallback_root: Path,
+) -> dict[str, Any]:
+    manifest = read_profile_manifest(profile_path)
+    if staging_root.exists() or fallback_root.exists():
+        raise MigrationError("迁移临时目录已存在，已停止以避免覆盖")
+    staging_root.mkdir(parents=True)
+    fallback_root.mkdir(parents=True)
+    try:
+        records: dict[str, dict[str, Any]] = {}
+        for record in manifest["files"]:
+            if not isinstance(record, dict) or not isinstance(record.get("path"), str):
+                raise MigrationError("配置快照文件清单格式无效")
+            name = str(_safe_archive_path(record["path"]))
+            if name in records:
+                raise MigrationError(f"配置快照文件清单重复：{name}")
+            records[name] = record
+
+        with zipfile.ZipFile(profile_path, "r") as zf:
+            archive_entries = [
+                info
+                for info in zf.infolist()
+                if not info.is_dir() and info.filename != "manifest.json"
+            ]
+            archive_files = {info.filename: info for info in archive_entries}
+            if len(archive_entries) != len(archive_files):
+                raise MigrationError("配置快照包含重复文件条目")
+            if set(archive_files) != set(records):
+                missing = sorted(set(records) - set(archive_files))
+                extra = sorted(set(archive_files) - set(records))
+                raise MigrationError(f"配置快照文件清单不一致，缺少 {missing}，多出 {extra}")
+
+            for name, record in records.items():
+                info = archive_files[name]
+                _safe_archive_path(info.filename)
+                if _zipinfo_is_symlink(info):
+                    raise MigrationError(f"配置快照不允许符号链接：{name}")
+                expected_size = int(record.get("size", -1))
+                if info.file_size != expected_size:
+                    raise MigrationError(f"文件大小校验失败：{name}")
+
+                if name.startswith("payload/"):
+                    relative = _safe_archive_path(name[len("payload/") :])
+                    target = staging_root.joinpath(*relative.parts)
+                elif name.startswith("fallback/"):
+                    relative = _safe_archive_path(name[len("fallback/") :])
+                    target = fallback_root.joinpath(*relative.parts)
+                else:
+                    raise MigrationError(f"配置快照包含未知区域：{name}")
+
+                if not path_is_within(target, staging_root) and not path_is_within(target, fallback_root):
+                    raise MigrationError(f"配置快照目标路径越界：{name}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                digest = hashlib.sha256()
+                with zf.open(info, "r") as source, target.open("xb") as destination:
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        destination.write(chunk)
+                        digest.update(chunk)
+                if digest.hexdigest() != record.get("sha256"):
+                    raise MigrationError(f"SHA-256 校验失败：{name}")
+    except Exception:
+        shutil.rmtree(staging_root, ignore_errors=True)
+        shutil.rmtree(fallback_root, ignore_errors=True)
+        raise
+    return manifest
+
+
+def create_directory_backup(source_root: Path, backup_path: Path) -> dict[str, Any]:
+    backup_path.parent.mkdir(parents=True, exist_ok=True)
+    records: list[dict[str, Any]] = []
+    skipped_symlinks: list[str] = []
+    try:
+        with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+            if source_root.exists():
+                for item in sorted(source_root.rglob("*"), key=lambda value: str(value).casefold()):
+                    if item.is_symlink():
+                        skipped_symlinks.append(str(item.relative_to(source_root)))
+                        continue
+                    if not item.is_file():
+                        continue
+                    relative = item.relative_to(source_root).as_posix()
+                    _safe_archive_path(relative)
+                    digest = sha256_file(item)
+                    size = item.stat().st_size
+                    zf.write(item, relative)
+                    records.append({"path": relative, "size": size, "sha256": digest})
+    except Exception:
+        backup_path.unlink(missing_ok=True)
+        raise
+    return {
+        "path": str(backup_path),
+        "sha256": sha256_file(backup_path),
+        "files": records,
+        "skipped_symlinks": skipped_symlinks,
+    }
+
+
+def extract_directory_backup(
+    backup_path: Path,
+    records: list[dict[str, Any]],
+    staging_root: Path,
+) -> None:
+    if staging_root.exists():
+        raise MigrationError(f"恢复临时目录已存在：{staging_root}")
+    staging_root.mkdir(parents=True)
+    expected = {str(_safe_archive_path(item["path"])): item for item in records}
+    try:
+        with zipfile.ZipFile(backup_path, "r") as zf:
+            actual = {
+                info.filename: info
+                for info in zf.infolist()
+                if not info.is_dir()
+            }
+            if set(actual) != set(expected):
+                raise MigrationError("恢复包内容与清单不一致")
+            for name, record in expected.items():
+                info = actual[name]
+                if _zipinfo_is_symlink(info) or info.file_size != int(record["size"]):
+                    raise MigrationError(f"恢复包文件校验失败：{name}")
+                target = staging_root.joinpath(*_safe_archive_path(name).parts)
+                if not path_is_within(target, staging_root):
+                    raise MigrationError(f"恢复包目标路径越界：{name}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                digest = hashlib.sha256()
+                with zf.open(info) as source, target.open("xb") as destination:
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        destination.write(chunk)
+                        digest.update(chunk)
+                if digest.hexdigest() != record["sha256"]:
+                    raise MigrationError(f"恢复包 SHA-256 校验失败：{name}")
+    except Exception:
+        shutil.rmtree(staging_root, ignore_errors=True)
+        raise
+
+
+def atomic_install(staging_root: Path, target_root: Path, run_id: str) -> Path | None:
+    target_root.parent.mkdir(parents=True, exist_ok=True)
+    old_root = target_root.parent / f".{target_root.name}.mmy_old_{run_id}"
+    if old_root.exists():
+        raise MigrationError(f"事务备份目录已存在：{old_root}")
+    had_target = target_root.exists()
+    if had_target:
+        os.replace(target_root, old_root)
+    try:
+        os.replace(staging_root, target_root)
+    except Exception:
+        if had_target and old_root.exists() and not target_root.exists():
+            os.replace(old_root, target_root)
+        raise
+    return old_root if had_target else None
+
+
+def finalize_atomic_install(old_root: Path | None) -> None:
+    if old_root and old_root.exists():
+        shutil.rmtree(old_root)
+
+
+def rollback_atomic_install(
+    target_root: Path,
+    old_root: Path | None,
+    run_id: str,
+) -> Path | None:
+    failed_root = target_root.parent / f".{target_root.name}.mmy_failed_{run_id}"
+    if target_root.exists():
+        if failed_root.exists():
+            shutil.rmtree(failed_root, ignore_errors=True)
+        os.replace(target_root, failed_root)
+    if old_root and old_root.exists():
+        os.replace(old_root, target_root)
+    return failed_root if failed_root.exists() else None
+
+
+def parse_probe_output(output: str) -> dict[str, Any]:
+    for line in reversed(output.splitlines()):
+        if PROBE_MARKER in line:
+            payload = line.split(PROBE_MARKER, 1)[1].strip()
+            try:
+                result = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                raise MigrationError(f"目标 Blender 探针输出无效：{exc}") from exc
+            required = {
+                "version",
+                "user_root",
+                "config_dir",
+                "scripts_dir",
+                "datafiles_dir",
+                "extensions_dir",
+            }
+            if not required.issubset(result):
+                raise MigrationError("目标 Blender 探针缺少必要路径")
+            return result
+    raise MigrationError("目标 Blender 未返回探针结果")
+
+
+def validate_target_resource_layout(probe: dict[str, Any], target_root: Path) -> None:
+    for key in ("config_dir", "scripts_dir", "datafiles_dir", "extensions_dir"):
+        value = probe.get(key)
+        if value and not path_is_within(Path(value), target_root):
+            raise MigrationError(
+                f"目标 Blender 使用了独立的 {key} 环境变量路径，第一版不支持自动迁移"
+            )
+
+
+def run_target_probe(target_executable: Path, timeout: int = 60) -> dict[str, Any]:
+    executable = _resolved(target_executable)
+    if not executable.is_file():
+        raise MigrationError(f"目标 Blender 不存在：{executable}")
+    expression = (
+        "import bpy,json;"
+        f"print('{PROBE_MARKER}'+json.dumps({{"
+        "'version':list(bpy.app.version),"
+        "'binary_path':bpy.app.binary_path,"
+        "'user_root':bpy.utils.resource_path('USER'),"
+        "'config_dir':bpy.utils.user_resource('CONFIG'),"
+        "'scripts_dir':bpy.utils.user_resource('SCRIPTS'),"
+        "'datafiles_dir':bpy.utils.user_resource('DATAFILES'),"
+        "'extensions_dir':bpy.utils.user_resource('EXTENSIONS')"
+        "}},ensure_ascii=True))"
+    )
+    command = [
+        str(executable),
+        "--background",
+        "--factory-startup",
+        "--python-expr",
+        expression,
+    ]
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            creationflags=creationflags,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise MigrationError("目标 Blender 探针启动超时") from exc
+    combined = f"{completed.stdout}\n{completed.stderr}"
+    if completed.returncode != 0:
+        raise MigrationError(f"目标 Blender 探针失败，退出码 {completed.returncode}")
+    return parse_probe_output(combined)
+
+
+def windows_executable_is_running(
+    target_executable: Path,
+    ignore_pids: Iterable[int] = (),
+) -> bool:
+    if os.name != "nt":
+        return False
+    script = (
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
+        "Get-CimInstance Win32_Process -Filter \"Name='blender.exe'\" | "
+        "Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress"
+    )
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise MigrationError("无法确认目标 Blender 是否正在运行") from exc
+    if completed.returncode != 0:
+        raise MigrationError("无法确认目标 Blender 是否正在运行")
+    raw = completed.stdout.strip()
+    if not raw:
+        return False
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise MigrationError("目标 Blender 进程检查结果无效") from exc
+    entries = data if isinstance(data, list) else [data]
+    ignored = {int(pid) for pid in ignore_pids}
+    expected = os.path.normcase(str(_resolved(target_executable)))
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        process_id = int(entry.get("ProcessId", -1))
+        if process_id in ignored:
+            continue
+        if not entry.get("ExecutablePath"):
+            raise MigrationError(
+                "存在无法确认路径的 Blender 进程，请关闭其他 Blender 后重试"
+            )
+        actual = os.path.normcase(str(_resolved(entry["ExecutablePath"])))
+        if actual == expected:
+            return True
+    return False
+
+
+def run_target_audit(
+    target_executable: Path,
+    worker_script: Path,
+    manifest_path: Path,
+    keymap_fingerprint_path: Path,
+    report_path: Path,
+    expected_user_root: Path,
+    timeout: int = 300,
+) -> dict[str, Any]:
+    command = [
+        str(target_executable),
+        "--background",
+        "--offline-mode",
+        "--python-exit-code",
+        "7",
+        "--python",
+        str(worker_script),
+        "--",
+        str(manifest_path),
+        str(keymap_fingerprint_path),
+        str(report_path),
+        str(expected_user_root),
+    ]
+    environment = os.environ.copy()
+    environment["MMY_MIGRATION_AUDIT"] = "1"
+    environment["MMY_MIGRATION_EXPECTED_ROOT"] = str(expected_user_root)
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            env=environment,
+            creationflags=creationflags,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise MigrationError(f"目标 Blender 验证超过 {timeout} 秒，已中止") from exc
+
+    log_path = report_path.with_name("target_blender.log")
+    log_path.write_text(
+        f"STDOUT\n{completed.stdout}\n\nSTDERR\n{completed.stderr}",
+        encoding="utf-8",
+    )
+    if completed.returncode != 0:
+        raise MigrationError(f"目标 Blender 验证失败，退出码 {completed.returncode}")
+    if not report_path.is_file():
+        raise MigrationError("目标 Blender 未生成迁移报告")
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise MigrationError(f"目标 Blender 迁移报告无效：{exc}") from exc
+    if report.get("status") not in {"success", "degraded"}:
+        raise MigrationError(report.get("error") or "目标 Blender 验证未通过")
+    return report
+
+
+def _write_recovery_metadata(path: Path, data: dict[str, Any]) -> None:
+    temp = path.with_suffix(".tmp")
+    temp.write_text(_json_dump(data), encoding="utf-8")
+    os.replace(temp, path)
+
+
+def execute_migration(
+    snapshot: SourceSnapshot,
+    target_executable: Path,
+    output_dir: Path,
+    worker_script: Path,
+    current_pid: int,
+    audit_timeout: int = 300,
+) -> MigrationResult:
+    if os.name == "nt" and windows_executable_is_running(target_executable, [current_pid]):
+        raise MigrationError("目标 Blender 正在运行，请关闭后重试")
+
+    probe = run_target_probe(target_executable)
+    target_version = validate_forward_version(snapshot.version, probe["version"])
+    target_root = _resolved(probe["user_root"])
+    validate_target_resource_layout(probe, target_root)
+    if target_root == _resolved(snapshot.user_root):
+        raise MigrationError("来源与目标 Blender 正在使用同一用户目录，不能执行迁移")
+    output = ensure_external_output(output_dir, [snapshot.user_root, target_root])
+    profile = create_profile(snapshot, output)
+
+    return _install_profile(
+        profile=profile,
+        source_version=snapshot.version,
+        target_version=target_version,
+        target_root=target_root,
+        target_executable=target_executable,
+        output=output,
+        worker_script=worker_script,
+        current_pid=current_pid,
+        audit_timeout=audit_timeout,
+    )
+
+
+def execute_existing_profile_migration(
+    profile_path: Path,
+    target_executable: Path,
+    output_dir: Path,
+    current_user_root: Path,
+    worker_script: Path,
+    current_pid: int,
+    audit_timeout: int = 300,
+) -> MigrationResult:
+    manifest = read_profile_manifest(profile_path)
+    if manifest.get("source", {}).get("platform") != "win32":
+        raise MigrationError("跨版本一键迁移第一版只接受 Windows 配置快照")
+    source_version = normalize_version(
+        manifest.get("source", {}).get("blender_version", [])
+    )
+    if os.name == "nt" and windows_executable_is_running(target_executable, [current_pid]):
+        raise MigrationError("目标 Blender 正在运行，请关闭后重试")
+    probe = run_target_probe(target_executable)
+    target_version = validate_forward_version(source_version, probe["version"])
+    target_root = _resolved(probe["user_root"])
+    validate_target_resource_layout(probe, target_root)
+    if target_root == _resolved(current_user_root):
+        raise MigrationError("当前与目标 Blender 正在使用同一用户目录，不能执行迁移")
+    if path_is_within(profile_path, target_root):
+        raise MigrationError("配置包不能存放在即将被替换的目标用户目录内")
+    output = ensure_external_output(output_dir, [current_user_root, target_root])
+    profile = ProfileResult(
+        path=_resolved(profile_path),
+        manifest=manifest,
+        warnings=list(manifest.get("warnings", [])),
+    )
+    return _install_profile(
+        profile=profile,
+        source_version=source_version,
+        target_version=target_version,
+        target_root=target_root,
+        target_executable=target_executable,
+        output=output,
+        worker_script=worker_script,
+        current_pid=current_pid,
+        audit_timeout=audit_timeout,
+    )
+
+
+def _install_profile(
+    profile: ProfileResult,
+    source_version: Iterable[int],
+    target_version: tuple[int, int, int],
+    target_root: Path,
+    target_executable: Path,
+    output: Path,
+    worker_script: Path,
+    current_pid: int,
+    audit_timeout: int,
+) -> MigrationResult:
+    source_version = normalize_version(source_version)
+
+    payload_size = sum(
+        int(item["size"])
+        for item in profile.manifest["files"]
+        if item["path"].startswith("payload/")
+    )
+    target_size = directory_size(target_root)
+    ensure_free_space(target_root.parent, int(payload_size * 1.15) + MIN_FREE_SPACE_BYTES)
+    ensure_free_space(output, int(target_size * 1.1) + MIN_FREE_SPACE_BYTES)
+
+    run_id = _run_id()
+    recovery_dir = output / RECOVERY_DIR_NAME / (
+        f"{version_string(source_version)}_to_{version_string(target_version)}_{run_id}"
+    )
+    recovery_dir.mkdir(parents=True, exist_ok=False)
+    recovery_path = recovery_dir / "recovery.json"
+    backup = create_directory_backup(target_root, recovery_dir / "target_before.zip")
+    metadata: dict[str, Any] = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "status": "preparing",
+        "source_version": list(source_version),
+        "target_version": list(target_version),
+        "target_executable": str(_resolved(target_executable)),
+        "target_root": str(target_root),
+        "target_existed": target_root.exists(),
+        "profile_path": str(profile.path),
+        "backup": backup,
+    }
+    _write_recovery_metadata(recovery_path, metadata)
+
+    staging_root = target_root.parent / f".{target_root.name}.mmy_stage_{run_id}"
+    fallback_root = recovery_dir / "fallback"
+    old_root: Path | None = None
+    swapped = False
+    try:
+        manifest = extract_profile(profile.path, staging_root, fallback_root)
+        manifest_path = recovery_dir / "source_manifest.json"
+        manifest_path.write_text(_json_dump(manifest), encoding="utf-8")
+        if os.name == "nt" and windows_executable_is_running(
+            target_executable,
+            [current_pid],
+        ):
+            raise MigrationError("目标 Blender 在迁移准备期间被打开，请关闭后重试")
+        old_root = atomic_install(staging_root, target_root, run_id)
+        swapped = True
+        metadata["status"] = "validating"
+        _write_recovery_metadata(recovery_path, metadata)
+
+        report_path = recovery_dir / "migration_report.json"
+        report = run_target_audit(
+            _resolved(target_executable),
+            worker_script,
+            manifest_path,
+            fallback_root / "keymap_fingerprint.json",
+            report_path,
+            target_root,
+            timeout=audit_timeout,
+        )
+        finalize_atomic_install(old_root)
+        metadata["status"] = report["status"]
+        metadata["completed_at"] = datetime.now().isoformat(timespec="seconds")
+        metadata["report_path"] = str(report_path)
+        _write_recovery_metadata(recovery_path, metadata)
+        return MigrationResult(
+            status=report["status"],
+            profile_path=profile.path,
+            recovery_dir=recovery_dir,
+            report_path=report_path,
+            target_version=target_version,
+            disabled_addons=list(report.get("disabled_addons", [])),
+            warnings=list(profile.warnings) + list(report.get("warnings", [])),
+        )
+    except Exception as exc:
+        failed_root = None
+        if swapped:
+            try:
+                failed_root = rollback_atomic_install(target_root, old_root, run_id)
+            except Exception as rollback_exc:
+                metadata["rollback_error"] = str(rollback_exc)
+        shutil.rmtree(staging_root, ignore_errors=True)
+        metadata["status"] = "rolled_back" if swapped and "rollback_error" not in metadata else "failed"
+        metadata["error"] = str(exc)
+        if failed_root:
+            metadata["failed_target_root"] = str(failed_root)
+        _write_recovery_metadata(recovery_path, metadata)
+        if isinstance(exc, MigrationError):
+            if exc.recovery_dir is None:
+                exc.recovery_dir = recovery_dir
+            raise
+        raise MigrationError(f"迁移失败：{exc}", recovery_dir=recovery_dir) from exc
+
+
+def restore_recovery(recovery_file: Path, current_pid: int) -> dict[str, Any]:
+    try:
+        metadata = json.loads(recovery_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise MigrationError(f"恢复记录无效：{exc}") from exc
+    if metadata.get("schema_version") != 1:
+        raise MigrationError("不支持的恢复记录版本")
+
+    target_executable = _resolved(metadata["target_executable"])
+    target_root = _resolved(metadata["target_root"])
+    if os.name == "nt":
+        if windows_executable_is_running(target_executable, [current_pid]):
+            raise MigrationError("目标 Blender 正在运行，请关闭后重试")
+        probe = run_target_probe(target_executable)
+        probed_root = _resolved(probe["user_root"])
+        validate_target_resource_layout(probe, probed_root)
+        if probed_root != target_root:
+            raise MigrationError(
+                "恢复记录中的目标目录与目标 Blender 实际用户目录不一致"
+            )
+    backup = metadata.get("backup") or {}
+    backup_path = _resolved(backup.get("path", ""))
+    if not path_is_within(backup_path, recovery_file.parent):
+        raise MigrationError("恢复包必须位于 recovery.json 所在目录内")
+    if not backup_path.is_file() or sha256_file(backup_path) != backup.get("sha256"):
+        raise MigrationError("迁移前恢复包不存在或校验失败")
+
+    run_id = _run_id()
+    recovery_dir = recovery_file.parent
+    current_backup = create_directory_backup(
+        target_root,
+        recovery_dir / f"target_before_manual_restore_{run_id}.zip",
+    )
+    staging_root = target_root.parent / f".{target_root.name}.mmy_restore_{run_id}"
+
+    if metadata.get("target_existed"):
+        extract_directory_backup(backup_path, list(backup.get("files", [])), staging_root)
+        old_root = atomic_install(staging_root, target_root, f"restore_{run_id}")
+        finalize_atomic_install(old_root)
+    else:
+        removed_root = target_root.parent / f".{target_root.name}.mmy_removed_{run_id}"
+        if target_root.exists():
+            os.replace(target_root, removed_root)
+            shutil.rmtree(removed_root)
+
+    result = {
+        "status": "success",
+        "restored_at": datetime.now().isoformat(timespec="seconds"),
+        "target_root": str(target_root),
+        "current_backup": current_backup,
+    }
+    (recovery_dir / f"restore_report_{run_id}.json").write_text(
+        _json_dump(result), encoding="utf-8"
+    )
+    return result
+
+
+def suggest_blender_executable(current_executable: Path, remembered: str = "") -> str:
+    if remembered and Path(remembered).is_file():
+        return remembered
+    if os.name != "nt":
+        return ""
+    candidates: set[Path] = set()
+    roots = [current_executable.parent.parent]
+    program_files = os.environ.get("ProgramFiles")
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if program_files:
+        roots.append(Path(program_files) / "Blender Foundation")
+    if local_app_data:
+        roots.append(Path(local_app_data) / "Programs" / "Blender Foundation")
+    for root in roots:
+        if not str(root) or not root.exists():
+            continue
+        direct = root / "blender.exe"
+        if direct.is_file():
+            candidates.add(direct)
+        candidates.update(root.glob("*/blender.exe"))
+    current = _resolved(current_executable)
+    choices = [item for item in candidates if _resolved(item) != current]
+
+    def sort_key(path: Path) -> tuple[int, ...]:
+        import re
+
+        numbers = re.findall(r"\d+", str(path.parent))
+        return tuple(int(value) for value in numbers[-3:])
+
+    choices.sort(key=sort_key, reverse=True)
+    return str(choices[0]) if choices else ""

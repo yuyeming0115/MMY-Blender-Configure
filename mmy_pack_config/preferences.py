@@ -196,11 +196,56 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
 
     # ---------- 打包输出路径 ----------
     pack_output_path: bpy.props.StringProperty(
-        name="打包输出目录",
-        description="打包时的默认输出目录。留空则每次手动选择",
+        name="配置包输出目录",
+        description="Portable 打包、迁移快照和恢复记录的默认输出目录",
         subtype='DIR_PATH',
         default="",
         update=lambda self, ctx: _on_path_memory_changed(self),
+    )
+
+    # ---------- 跨版本迁移 ----------
+    last_target_blender: bpy.props.StringProperty(
+        name="上次目标 Blender",
+        subtype='FILE_PATH',
+        default="",
+    )
+
+    last_migration_profile: bpy.props.StringProperty(
+        name="上次迁移快照",
+        subtype='FILE_PATH',
+        default="",
+    )
+
+    last_migration_recovery: bpy.props.StringProperty(
+        name="上次恢复记录",
+        subtype='FILE_PATH',
+        default="",
+    )
+
+    last_migration_report: bpy.props.StringProperty(
+        name="上次迁移报告",
+        subtype='FILE_PATH',
+        default="",
+    )
+
+    migration_include_presets: bpy.props.BoolProperty(
+        name="默认包含用户预设",
+        default=True,
+    )
+
+    migration_include_datafiles: bpy.props.BoolProperty(
+        name="默认包含数据文件",
+        default=False,
+    )
+
+    migration_include_startup_scripts: bpy.props.BoolProperty(
+        name="默认包含启动脚本",
+        default=False,
+    )
+
+    migration_include_history: bpy.props.BoolProperty(
+        name="默认包含书签与最近文件",
+        default=False,
     )
 
     enable_weekly_auto_pack: bpy.props.BoolProperty(
@@ -248,15 +293,29 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
     def draw(self, context):
         layout = self.layout
 
-        # ========== 区块1：打包设置 ==========
+        # ========== 区块1：配置管理设置 ==========
         box = layout.box()
-        box.label(text="打包设置", icon='FILE_FOLDER')
+        box.label(text="配置管理", icon='FILE_FOLDER')
         col = box.column(align=True)
         col.prop(self, "last_portable_path")
         col.prop(self, "pack_output_path")
         row = col.row(align=True)
         row.prop(self, "enable_weekly_auto_pack")
         row.operator("mmy.test_weekly_auto_pack", text="立即测试", icon='FILE_REFRESH')
+
+        migration_box = layout.box()
+        migration_box.label(text="跨版本迁移默认项", icon='FILE_REFRESH')
+        migration_box.prop(self, "last_target_blender")
+        grid = migration_box.grid_flow(columns=2, align=True)
+        grid.prop(self, "migration_include_presets")
+        grid.prop(self, "migration_include_datafiles")
+        grid.prop(self, "migration_include_startup_scripts")
+        grid.prop(self, "migration_include_history")
+        if self.last_migration_report:
+            migration_box.label(
+                text=f"最近报告：{Path(self.last_migration_report).name}",
+                icon='TEXT',
+            )
 
         # ========== 区块2：插件加载耗时（双列彩虹色）==========
         self._draw_timer_panel(layout)

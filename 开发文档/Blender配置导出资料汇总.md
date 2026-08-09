@@ -1,6 +1,6 @@
 # Blender 配置导出资料汇总
 
-> 整理时间：2026-05-22
+> 整理时间：2026-05-22；跨版本迁移结论修订：2026-08-10
 > 来源：项目文档、Blender 官方 API、社区实践
 
 ---
@@ -46,7 +46,7 @@ Blender/4.5/                      # 版本号目录
 ├── studiolights/                 # 工作室灯光预设
 │   └── custom_hdri.exr           # 自定义 HDRI 灯光
 │
-└── extensions/                   # Blender 4.5+ 扩展系统
+└── extensions/                   # Blender 4.2+ 扩展系统
     ├── user_installed/           # 用户安装的扩展
     └── repo_index.json           # 扩展仓库索引
 ```
@@ -72,7 +72,7 @@ datafiles_dir = bpy.utils.user_resource('DATAFILES')
 # 工作室灯光目录
 studiolights_dir = bpy.utils.user_resource('STUDIO_LIGHTS')
 
-# 扩展目录（Blender 4.5+）
+# 扩展目录（Blender 4.2+）
 extensions_dir = bpy.utils.user_resource('EXTENSIONS')
 ```
 
@@ -139,7 +139,7 @@ mmy_config_20260522_143000.zip
 ├── scripts/startup/              # 启动脚本
 ├── datafiles/                    # 数据文件
 ├── studiolights/                 # 灯光预设
-└── extensions/                   # 扩展（4.5+）
+└── extensions/                   # 扩展（4.2+）
 ```
 
 ### manifest.json 结构
@@ -175,7 +175,7 @@ mmy_config_20260522_143000.zip
 | 导出版本 | 导入目标 | 兼容性 | 风险说明 |
 |---------|---------|--------|---------|
 | 4.5 | 4.5 | ✅ 完全兼容 | 直接迁移 |
-| 4.5 | 4.4 | ⚠ 部分兼容 | extensions 目录无效，新功能设置丢失 |
+| 4.5 | 4.4 | ⚠ 部分兼容 | 降级读取有风险，扩展与高版本设置可能不兼容 |
 | 4.5 | 4.3 | ⚠ 部分兼容 | 同上，更多设置可能不兼容 |
 | 4.5 | 3.x | ❌ 不兼容 | 主版本跨度过大，会崩溃 |
 | 4.4 | 4.5 | ⚠ 部分兼容 | 缺少 4.5 新功能设置，需补全 |
@@ -188,7 +188,7 @@ mmy_config_20260522_143000.zip
 | **2.x → 3.x** | 工作区系统重构 | userpref.blend |
 | **3.x → 4.0** | 节点系统大改、EEVEE 重构 | presets, datafiles |
 | **4.0 → 4.1** | 快捷键系统重构 | keymap |
-| **4.4 → 4.5** | 新增扩展系统 | extensions |
+| **4.1 → 4.2** | 引入扩展平台 | extensions |
 
 ---
 
@@ -222,7 +222,7 @@ mmy_config_20260522_143000.zip
 | 配置项 | 原因 |
 |--------|------|
 | **startup 脚本** | API 变更会导致脚本报错甚至崩溃 |
-| **extensions (4.5+)** | 仅 4.5+ 存在此系统 |
+| **extensions (4.2+)** | 跨版本复制后必须由目标 Blender 验证兼容性 |
 
 ---
 
@@ -258,9 +258,9 @@ temp_backup_path = config_dir / temp_backup_name
 
 ## 八、常见问题解答
 
-### Q1: 为什么 userpref.blend 不分离 keymap？
+### Q1: 为什么主备份仍使用 userpref.blend，同时又导出 keymap？
 
-Blender 本身不分离存储快捷键和偏好设置。强行分离需要解析 `.blend` 文件格式，复杂度过高，且可能破坏内部数据结构。
+Blender 将生效中的快捷键与偏好共同存储在 `userpref.blend`，因此完整迁移仍以该文件为主。与此同时，Blender 提供 `preferences.keyconfig_export`，可以把 Keymap 独立导出为 Python 文件。当前策略是复制 `userpref.blend` 保持完整状态，再导出 `keymap.py` 和指纹用于校验与人工恢复，不解析 `.blend` 二进制格式。
 
 ### Q2: 插件启用状态在哪？
 
@@ -274,7 +274,7 @@ Blender 本身不分离存储快捷键和偏好设置。强行分离需要解析
 
 ### Q4: 扩展系统 (extensions) 是什么？
 
-Blender 4.5 引入的官方扩展平台，替代传统插件系统的一部分功能。扩展通过 Blender 内置的扩展管理器安装，与传统 addons 有不同的存储和管理方式。
+Blender 4.2 引入的官方扩展平台，替代传统插件系统的一部分功能。扩展通过 Blender 内置的扩展管理器安装，与传统 addons 有不同的存储和管理方式。
 
 ### Q5: startup.blend 和 userpref.blend 有什么区别？
 
@@ -408,7 +408,7 @@ datafiles_dir = Path(bpy.utils.user_resource('DATAFILES'))
 # 工作室灯光目录
 studiolights_dir = Path(bpy.utils.user_resource('STUDIO_LIGHTS'))
 
-# 扩展目录（Blender 4.5+）
+# 扩展目录（Blender 4.2+）
 extensions_dir = Path(bpy.utils.user_resource('EXTENSIONS'))
 
 # ===== 组合路径获取 =====
