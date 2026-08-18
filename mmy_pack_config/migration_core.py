@@ -83,6 +83,7 @@ class MigrationResult:
     disabled_addons: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     report_html_path: Path | None = None
+    keymap_lost_count: int = 0
 
 
 @dataclass
@@ -106,6 +107,48 @@ def _run_id() -> str:
 def version_string(version: Iterable[int]) -> str:
     values = list(version)
     return ".".join(str(value) for value in values[:3])
+
+
+def classify_keymap_audit(
+    expected_items: list,
+    actual_signatures: set,
+    operator_exists,
+) -> dict[str, Any]:
+    """对键位指纹差异做分类（纯函数，不依赖 bpy，可单测）。
+
+    后台审计模式无法物化默认键位、且部分插件跳过后台注册，因此只有
+    「用户新增 + 操作符在目标存在 + 目标缺失」才判定为真丢失（lost）：
+
+    - ``kind != "added"`` 或 idname 为空 → unverifiable（"modified" 修改默认项
+      依赖目标版本键位结构、"addon" 修改插件注册项依赖插件注册、模态项，
+      后台均无法可靠验证）；
+    - 操作符在目标审计环境不存在 → orphan（插件后台未注册，或目标版本
+      已移除该操作；GUI 下能注册的插件会自行恢复自己的键位）；
+    - 其余缺失 → lost（真丢失，触发 degraded）。
+    """
+    lost: list[dict[str, str]] = []
+    orphans: list[str] = []
+    unverifiable = 0
+    matched = 0
+    for raw in expected_items:
+        entry = raw if isinstance(raw, dict) else {"sig": str(raw)}
+        if entry.get("sig") in actual_signatures:
+            matched += 1
+            continue
+        idname = str(entry.get("idname") or "")
+        if not idname or entry.get("kind") != "added":
+            unverifiable += 1
+        elif not operator_exists(idname):
+            orphans.append(idname)
+        else:
+            lost.append({"keymap": str(entry.get("keymap") or ""), "idname": idname})
+    return {
+        "matched_count": matched,
+        "lost_count": len(lost),
+        "lost": lost[:100],
+        "orphan_operators": sorted(set(orphans)),
+        "unverifiable_count": unverifiable,
+    }
 
 
 def normalize_version(value: Iterable[int]) -> tuple[int, int, int]:
@@ -1109,6 +1152,9 @@ def _install_profile(
             disabled_addons=list(report.get("disabled_addons", [])),
             warnings=list(profile.warnings) + list(report.get("warnings", [])),
             report_html_path=html_report_path,
+            keymap_lost_count=int(
+                (report.get("keymap") or {}).get("lost_count", 0)
+            ),
         )
     except Exception as exc:
         failed_root = None
@@ -1340,19 +1386,39 @@ def build_migration_report_html(
 
     keymap_html = ""
     if keymap:
-        keymap_html = f"""
+        if keymap.get("skipped"):
+            keymap_html = f"""
   <h2>快捷键指纹比对</h2>
+  <p>已跳过（{_esc(keymap.get('skipped'))}）：源环境默认键位未物化，无法可靠求差。</p>"""
+        else:
+            keymap_html = f"""
+  <h2>快捷键指纹比对（用户差异项）</h2>
   <table>
-    <tr><th>源条目数</th><th>目标条目数</th><th>丢失条目数</th></tr>
-    <tr><td>{_esc(keymap.get('source_count', 0))}</td><td>{_esc(keymap.get('target_count', 0))}</td><td>{_esc(keymap.get('missing_count', 0))}</td></tr>
+    <tr><th>源差异项</th><th>匹配</th><th>丢失</th><th>后台不可验证</th></tr>
+    <tr><td>{_esc(keymap.get('source_count', 0))}</td><td>{_esc(keymap.get('matched_count', 0))}</td><td>{_esc(keymap.get('lost_count', 0))}</td><td>{_esc(keymap.get('unverifiable_count', 0))}</td></tr>
+  </table>
+  <p class="muted">默认键位由目标版本自身提供，不参与比对；"修改默认"类差异依赖目标版本键位结构，后台审计无法可靠验证，打开目标 Blender（GUI）后生效。</p>"""
+            lost_items = keymap.get("lost") or []
+            if lost_items:
+                rows_lost = "".join(
+                    "<tr><td>{}</td><td><code>{}</code></td></tr>".format(
+                        _esc(item.get("keymap", "")), _esc(item.get("idname", ""))
+                    )
+                    for item in lost_items
+                )
+                keymap_html += f"""
+  <p>以下用户新增快捷键在目标版本中丢失：</p>
+  <table>
+    <tr><th>键位映射</th><th>操作</th></tr>
+    {rows_lost}
   </table>"""
-        orphan = keymap.get("orphan_operators") or []
-        if orphan:
-            keymap_html += (
-                "\n  <p>以下快捷键指向的操作在目标版本中不存在：</p><ul>"
-                + "".join(f"<li><code>{_esc(op)}</code></li>" for op in orphan)
-                + "</ul>"
-            )
+            orphan = keymap.get("orphan_operators") or []
+            if orphan:
+                keymap_html += (
+                    "\n  <p>以下快捷键指向的操作在目标版本不存在（插件未注册或已被版本移除）：</p><ul>"
+                    + "".join(f"<li><code>{_esc(op)}</code></li>" for op in orphan)
+                    + "</ul>"
+                )
 
     disabled_html = ""
     if disabled:
@@ -1408,6 +1474,7 @@ def build_migration_report_html(
   code {{ background: #eef1f4; padding: 1px 6px; border-radius: 4px; font-size: 12px; }}
   pre {{ background: #0f172a; color: #e2e8f0; padding: 14px; border-radius: 8px; overflow-x: auto; font-size: 12.5px; }}
   .meta {{ color: #4e5560; font-size: 13.5px; }}
+  .muted {{ color: #6b7280; font-size: 12.5px; }}
   .card {{ background: #fff; border: 1px solid #e3e6ea; border-radius: 10px; padding: 14px 20px; margin-top: 14px; }}
 </style>
 </head>

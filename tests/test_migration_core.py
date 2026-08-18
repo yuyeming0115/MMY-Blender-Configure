@@ -53,7 +53,19 @@ class MigrationCoreTest(unittest.TestCase):
         self.keymap_fingerprint = self.root / "keymap_fingerprint.json"
         self.keymap_export.write_text("keyconfig = []", encoding="utf-8")
         self.keymap_fingerprint.write_text(
-            json.dumps({"schema_version": 1, "items": ["shortcut"]}),
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "items": [
+                        {
+                            "sig": '{"keymap":"Mesh","idname":"mesh.custom"}',
+                            "kind": "added",
+                            "idname": "mesh.custom",
+                            "keymap": "Mesh",
+                        }
+                    ],
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -432,8 +444,9 @@ class MigrationCoreTest(unittest.TestCase):
                 {"module": "bad_addon", "kind": "legacy",
                  "reason": "插件未能在目标版本加载", "disabled": True}
             ],
-            "keymap": {"source_count": 10, "target_count": 10, "missing_count": 0,
-                       "missing": [], "orphan_operators": []},
+            "keymap": {"source_count": 10, "matched_count": 9, "lost_count": 1,
+                       "lost": [{"keymap": "Mesh", "idname": "mesh.custom_op"}],
+                       "orphan_operators": ["uv.gone_op"], "unverifiable_count": 2},
             "missing_paths": [],
             "warnings": ["示例警告"],
         }
@@ -446,6 +459,47 @@ class MigrationCoreTest(unittest.TestCase):
         self.assertIn("5.2.0", text)
         self.assertIn("bad_addon", text)
         self.assertIn("降级", text)
+        self.assertIn("mesh.custom_op", text)
+        self.assertIn("uv.gone_op", text)
+
+    def test_classify_keymap_audit_categories(self):
+        expected = [
+            # 用户新增 + 操作符存在 + 目标缺失 → 真丢失
+            {"sig": "s1", "kind": "added", "idname": "mmy.custom", "keymap": "Mesh"},
+            # 用户新增但操作符不存在（插件后台未注册/版本移除）→ orphan
+            {"sig": "s2", "kind": "added", "idname": "uv.univ_cut", "keymap": "UV Editor"},
+            # 修改默认项 → 后台不可验证
+            {"sig": "s3", "kind": "modified", "idname": "view3d.rotate", "keymap": "3D View"},
+            # 修改插件注册项（如用户改过的 univ 快捷键）→ 后台不可验证
+            {"sig": "s7", "kind": "addon", "idname": "uv.univ_rotate", "keymap": "UV Editor"},
+            # 模态项（无 idname）→ 后台不可验证
+            {"sig": "s4", "kind": "added", "idname": "", "keymap": "Knife Tool Modal Map"},
+            # 已匹配项
+            {"sig": "s5", "kind": "added", "idname": "mmy.ok", "keymap": "Mesh"},
+            # 旧格式（纯字符串签名）→ 按不可验证处理，不误判丢失
+            "s6",
+        ]
+        actual = {"s5"}
+        existing_ops = {"mmy.custom", "view3d.rotate", "uv.univ_rotate"}
+        result = core.classify_keymap_audit(
+            expected, actual, lambda idname: idname in existing_ops
+        )
+        self.assertEqual(result["matched_count"], 1)
+        self.assertEqual(result["lost_count"], 1)
+        self.assertEqual(result["lost"][0]["idname"], "mmy.custom")
+        self.assertEqual(result["orphan_operators"], ["uv.univ_cut"])
+        self.assertEqual(result["unverifiable_count"], 4)
+
+    def test_classify_keymap_audit_no_false_positive_when_all_explainable(self):
+        # 真机场景复现：差异项全部可归因（插件后台未注册/修改默认项）时不得判丢失
+        expected = [
+            {"sig": "s1", "kind": "added", "idname": "uv.univ_cut", "keymap": "UV Editor"},
+            {"sig": "s2", "kind": "modified", "idname": "view3d.rotate", "keymap": "3D View"},
+        ]
+        result = core.classify_keymap_audit(expected, set(), lambda idname: False)
+        self.assertEqual(result["lost_count"], 0)
+        self.assertEqual(result["orphan_operators"], ["uv.univ_cut"])
+        self.assertEqual(result["unverifiable_count"], 1)
 
     def test_extract_portable_backup_skips_manifest_and_restores(self):
         backup = self.root / "MMY_Backup_Portable_v5.1.0_20260818_1200.zip"

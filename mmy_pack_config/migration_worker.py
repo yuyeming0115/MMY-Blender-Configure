@@ -12,8 +12,12 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 import addon_utils
 import bpy
+
+from migration_core import classify_keymap_audit
 
 
 def _script_arguments() -> tuple[Path, Path, Path, Path]:
@@ -139,13 +143,19 @@ def _keymap_item_signature(keymap, item) -> str:
 
 
 def _current_keymap_signatures() -> set[str]:
-    keyconfig = bpy.context.window_manager.keyconfigs.user
-    if keyconfig is None:
-        return set()
+    """采集目标侧键位签名（user ∪ addon 两张键位表）。
+
+    后台模式只落地 userpref 存储的差异项（默认键位不物化）；部分插件在
+    后台仍会注册自己的键位（可能落在 addon 表），并集可避免误判。
+    """
+    keyconfigs = bpy.context.window_manager.keyconfigs
     signatures = set()
-    for keymap in keyconfig.keymaps:
-        for item in keymap.keymap_items:
-            signatures.add(_keymap_item_signature(keymap, item))
+    for config in (keyconfigs.user, keyconfigs.addon):
+        if config is None:
+            continue
+        for keymap in config.keymaps:
+            for item in keymap.keymap_items:
+                signatures.add(_keymap_item_signature(keymap, item))
     return signatures
 
 
@@ -159,24 +169,23 @@ def _operator_exists(idname: str) -> bool:
 
 def _audit_keymap(fingerprint_path: Path) -> dict:
     expected_data = json.loads(fingerprint_path.read_text(encoding="utf-8"))
-    expected_items = set(expected_data.get("items", []))
+    if expected_data.get("skipped"):
+        return {
+            "skipped": str(expected_data["skipped"]),
+            "source_count": 0,
+            "target_count": 0,
+            "matched_count": 0,
+            "lost_count": 0,
+            "lost": [],
+            "orphan_operators": [],
+            "unverifiable_count": 0,
+        }
+    expected_items = list(expected_data.get("items", []))
     actual_items = _current_keymap_signatures()
-    missing = sorted(expected_items - actual_items)
-    orphan_operators = []
-    for signature in sorted(expected_items & actual_items):
-        try:
-            idname = json.loads(signature).get("idname", "")
-        except json.JSONDecodeError:
-            continue
-        if idname and not _operator_exists(idname):
-            orphan_operators.append(idname)
-    return {
-        "source_count": len(expected_items),
-        "target_count": len(actual_items),
-        "missing_count": len(missing),
-        "missing": missing[:100],
-        "orphan_operators": sorted(set(orphan_operators)),
-    }
+    result = classify_keymap_audit(expected_items, actual_items, _operator_exists)
+    result["source_count"] = len(expected_items)
+    result["target_count"] = len(actual_items)
+    return result
 
 
 def _path_value_is_missing(value: str) -> bool:
@@ -248,9 +257,15 @@ def run() -> dict:
     if "FINISHED" not in save_result:
         raise RuntimeError("目标 Blender 无法保存迁移后的偏好设置")
 
-    degraded = bool(disabled or keymap["missing_count"])
+    degraded = bool(disabled or keymap.get("lost_count"))
     if missing_paths:
         warnings.append(f"发现 {len(missing_paths)} 个失效绝对路径")
+    orphan_operators = keymap.get("orphan_operators") or []
+    if orphan_operators:
+        warnings.append(
+            f"{len(orphan_operators)} 个快捷键操作在目标审计环境不存在"
+            "（插件后台未注册或目标版本已移除，详见报告）"
+        )
     report = {
         "status": "degraded" if degraded else "success",
         "audited_at": datetime.now().isoformat(timespec="seconds"),

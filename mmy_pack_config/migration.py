@@ -166,14 +166,75 @@ def _keymap_item_signature(keymap, item) -> str:
     return json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+# 后台审计（blender --background）不会物化默认键位——实测 5.3 工厂模式后台
+# keyconfigs.user 仅 12 条；GUI 模式才会完整加载（数千条）。因此指纹只采集
+# 「用户相对默认键位与插件键位的差异项」，与目标侧后台能拿到的口径一致。
+_KEYMAP_DEFAULT_MATERIALIZED_MIN = 500
+
+
 def collect_keymap_fingerprint() -> dict:
-    keyconfig = bpy.context.window_manager.keyconfigs.user
-    items = set()
-    if keyconfig is not None:
-        for keymap in keyconfig.keymaps:
-            for item in keymap.keymap_items:
-                items.add(_keymap_item_signature(keymap, item))
-    return {"schema_version": 1, "items": sorted(items)}
+    """采集用户差异键位指纹（需在 GUI 模式调用，默认键位已物化）。
+
+    schema_version=2：items 为 [{"sig", "kind", "idname", "keymap"}]。
+    先剔除与默认键位表、插件键位表完全一致的条目（这些由目标版本/插件
+    自行提供，不属于用户数据），剩余差异项按锚点分类：
+    kind = "added"    —— 全新绑定（默认与插件键位中均无此条目锚点），
+                        目标侧可可靠验证，缺失即真丢失；
+           "modified" —— 修改默认绑定，依赖目标版本键位结构，后台不可验证；
+           "addon"    —— 修改插件注册绑定，依赖插件在目标侧注册，后台不可验证。
+    若默认键位条目数异常低（未物化），返回 skipped 标记让审计侧跳过比对，
+    宁可不审计也不产生误报。
+    """
+    keyconfigs = bpy.context.window_manager.keyconfigs
+    user = keyconfigs.user
+    if user is None:
+        return {"schema_version": 2, "skipped": "no_user_keyconfig", "items": []}
+
+    def _harvest(config):
+        sigs: set[str] = set()
+        pairs: set[tuple[str, str]] = set()
+        if config is not None:
+            for keymap in config.keymaps:
+                for item in keymap.keymap_items:
+                    sigs.add(_keymap_item_signature(keymap, item))
+                    pairs.add((keymap.name, item.idname))
+        return sigs, pairs
+
+    default_sigs, default_pairs = _harvest(keyconfigs.default)
+    if len(default_sigs) < _KEYMAP_DEFAULT_MATERIALIZED_MIN:
+        return {
+            "schema_version": 2,
+            "skipped": "default_keymaps_not_materialized",
+            "items": [],
+        }
+    addon_sigs, addon_pairs = _harvest(keyconfigs.addon)
+    baseline_sigs = default_sigs | addon_sigs
+
+    items = []
+    seen: set[str] = set()
+    for keymap in user.keymaps:
+        for item in keymap.keymap_items:
+            sig = _keymap_item_signature(keymap, item)
+            if sig in baseline_sigs or sig in seen:
+                continue
+            seen.add(sig)
+            pair = (keymap.name, item.idname)
+            if pair in default_pairs:
+                kind = "modified"
+            elif pair in addon_pairs:
+                kind = "addon"
+            else:
+                kind = "added"
+            items.append(
+                {
+                    "sig": sig,
+                    "kind": kind,
+                    "idname": item.idname or "",
+                    "keymap": keymap.name,
+                }
+            )
+    items.sort(key=lambda entry: entry["sig"])
+    return {"schema_version": 2, "items": items}
 
 
 def _prepare_source_snapshot(
@@ -874,9 +935,10 @@ class MMY_OT_MigrationConfirm(
                         migration.report_html_path or migration.report_path
                     )
                 if migration.status == "degraded":
-                    status_parts.append(
-                        f"{target_label}：降级（禁用 {len(migration.disabled_addons)} 个插件）"
-                    )
+                    detail = f"禁用 {len(migration.disabled_addons)} 个插件"
+                    if migration.keymap_lost_count:
+                        detail += f"，丢失 {migration.keymap_lost_count} 条快捷键"
+                    status_parts.append(f"{target_label}：降级（{detail}）")
                 else:
                     status_parts.append(
                         f"{target_label}：成功（{version_string(migration.target_version)}）"
