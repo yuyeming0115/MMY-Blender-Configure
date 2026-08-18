@@ -215,7 +215,7 @@ def normalize_output_path(output_path, portable_path=None, version=None):
         # 自动生成
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         ver = version or "unknown"
-        default_name = f"Blender_Portable_v{ver}_{timestamp}.zip"
+        default_name = f"MMY_Backup_Portable_v{ver}_{timestamp}.zip"
         config = load_config()
         out_dir = config.get("last_output_dir", str(Path.home() / "Desktop"))
         return str(Path(out_dir) / default_name)
@@ -227,7 +227,7 @@ def normalize_output_path(output_path, portable_path=None, version=None):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         ver = version or "unknown"
         base_dir = p if p.is_dir() else p.parent
-        default_name = f"Blender_Portable_v{ver}_{timestamp}.zip"
+        default_name = f"MMY_Backup_Portable_v{ver}_{timestamp}.zip"
         return str(base_dir / default_name)
 
     # 有后缀但不是 .zip
@@ -259,9 +259,9 @@ def get_unique_output_path(output_path):
 # 打包核心（快速模式：STORED 不压缩）
 # ============================================================
 
-def pack_portable(portable_path, output_path, compress=False, exclude_patterns=None):
+def pack_portable(portable_path, output_path, compress=False, exclude_patterns=None, version=None):
     """
-    打包整个 Blender portable/ 文件夹。
+    打包整个 Blender portable/ 文件夹，并在 zip 内写入 manifest.json。
 
     Args:
         portable_path:     portable 文件夹路径
@@ -269,11 +269,14 @@ def pack_portable(portable_path, output_path, compress=False, exclude_patterns=N
         compress:         是否启用 ZIP_DEFLATED 压缩（默认关闭，速度快 5-10x）
         exclude_patterns: 排除模式列表。None 时使用默认 EXCLUDE_PATTERNS；
                            传 [] 或 --all 则不排除任何文件
+        version:          Blender 版本号（写入 manifest，可从文件名推断）
     Returns:
         output_path 的 Path 对象
     Raises:
         FileNotFoundError: portable 文件夹不存在
     """
+    import platform
+
     portable_path = Path(portable_path)
     output_path = Path(output_path)
 
@@ -290,6 +293,7 @@ def pack_portable(portable_path, output_path, compress=False, exclude_patterns=N
 
     packed_files = 0
     skipped_files = 0
+    total_bytes = 0
     exclude_reasons = {}   # {原因描述: 计数}
     output_resolved = output_path.resolve(strict=False)
 
@@ -324,9 +328,34 @@ def pack_portable(portable_path, output_path, compress=False, exclude_patterns=N
             arcname_str = str(arcname).replace("\\", "/")
             zf.write(file_path, arcname_str)
             packed_files += 1
+            try:
+                total_bytes += file_path.stat().st_size
+            except OSError:
+                pass
 
             if packed_files % 1000 == 0:
                 print(f"[MMY]   进度：已打包 {packed_files}，已跳过 {skipped_files}...")
+
+        # ---- 写入 manifest.json（备份可辨识度）----
+        if version is None:
+            version = get_blender_version(portable_path) or "unknown"
+        manifest = {
+            "schema_version": 1,
+            "type": "portable",
+            "blender_version": version,
+            "install_mode": "portable",
+            "machine": platform.node(),
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "source_path": str(portable_path),
+            "file_count": packed_files,
+            "total_bytes": total_bytes,
+            "excluded_count": skipped_files,
+            "compressed": bool(compress),
+        }
+        zf.writestr(
+            "manifest.json",
+            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
+        )
 
     size_mb = output_path.stat().st_size / 1024 / 1024
 
@@ -385,7 +414,7 @@ def _run_tkinter_ui():
             version = "unknown"
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    default_name = f"Blender_Portable_v{version}_{timestamp}.zip"
+    default_name = f"MMY_Backup_Portable_v{version}_{timestamp}.zip"
 
     initial_dir = config.get("last_output_dir", str(Path.home()))
     output_path = filedialog.asksaveasfilename(
@@ -404,7 +433,7 @@ def _run_tkinter_ui():
     output_path = get_unique_output_path(output_path)
 
     try:
-        result = pack_portable(portable_path, output_path)
+        result = pack_portable(portable_path, output_path, version=version)
         messagebox.showinfo("打包完成", f"输出文件：\n{result}")
     except Exception as e:
         messagebox.showerror("打包失败", str(e))
@@ -450,7 +479,8 @@ def main():
         try:
             result = pack_portable(portable_path, output_path,
                                  compress=use_compress,
-                                 exclude_patterns=exclude_patterns)
+                                 exclude_patterns=exclude_patterns,
+                                 version=version)
             print(f"\n[MMY] ✅ 结果：{result}")
         except Exception as e:
             print(f"[MMY] ❌ 错误：{e}")

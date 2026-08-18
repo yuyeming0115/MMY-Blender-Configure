@@ -7,11 +7,14 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
+import time
 import uuid
 import zipfile
 from dataclasses import dataclass, field
@@ -21,10 +24,17 @@ from typing import Any, Iterable
 
 
 SCHEMA_VERSION = 2
-PROFILE_PREFIX = "MMY_Blender_Profile"
+PROFILE_PREFIX = "MMY_Backup_Profile"
+LEGACY_PROFILE_PREFIX = "MMY_Blender_Profile"
+PORTABLE_BACKUP_PREFIX = "MMY_Backup_Portable"
+LEGACY_PORTABLE_BACKUP_PREFIX = "Blender_Portable"
 RECOVERY_DIR_NAME = "MMY_Migration_Recovery"
 PROBE_MARKER = "MMY_PROBE_JSON:"
 MIN_FREE_SPACE_BYTES = 128 * 1024 * 1024
+
+_STALE_ARTIFACT_PATTERN = re.compile(
+    r"^\.[^\s].*\.mmy_(old|stage|failed|restore|removed)_"
+)
 
 
 class MigrationError(RuntimeError):
@@ -72,6 +82,17 @@ class MigrationResult:
     target_version: tuple[int, int, int]
     disabled_addons: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    report_html_path: Path | None = None
+
+
+@dataclass
+class TargetMigrationOutcome:
+    """多目标批量迁移中单个目标的结果。"""
+
+    target_executable: Path
+    result: MigrationResult | None = None
+    error: str = ""
+    exception: Exception | None = None
 
 
 def _timestamp() -> str:
@@ -774,69 +795,30 @@ def _write_recovery_metadata(path: Path, data: dict[str, Any]) -> None:
     os.replace(temp, path)
 
 
-def execute_migration(
-    snapshot: SourceSnapshot,
+def _install_profile_for_target(
+    profile: ProfileResult,
+    source_version: Iterable[int],
     target_executable: Path,
     output_dir: Path,
+    forbidden_roots: Iterable[Path],
     worker_script: Path,
     current_pid: int,
-    audit_timeout: int = 300,
+    audit_timeout: int,
 ) -> MigrationResult:
+    """对单个目标执行探针校验 + 安装，供单目标与多目标流程复用。"""
     if os.name == "nt" and windows_executable_is_running(target_executable, [current_pid]):
-        raise MigrationError("目标 Blender 正在运行，请关闭后重试")
-
-    probe = run_target_probe(target_executable)
-    target_version = validate_forward_version(snapshot.version, probe["version"])
-    target_root = _resolved(probe["user_root"])
-    validate_target_resource_layout(probe, target_root)
-    if target_root == _resolved(snapshot.user_root):
-        raise MigrationError("来源与目标 Blender 正在使用同一用户目录，不能执行迁移")
-    output = ensure_external_output(output_dir, [snapshot.user_root, target_root])
-    profile = create_profile(snapshot, output)
-
-    return _install_profile(
-        profile=profile,
-        source_version=snapshot.version,
-        target_version=target_version,
-        target_root=target_root,
-        target_executable=target_executable,
-        output=output,
-        worker_script=worker_script,
-        current_pid=current_pid,
-        audit_timeout=audit_timeout,
-    )
-
-
-def execute_existing_profile_migration(
-    profile_path: Path,
-    target_executable: Path,
-    output_dir: Path,
-    current_user_root: Path,
-    worker_script: Path,
-    current_pid: int,
-    audit_timeout: int = 300,
-) -> MigrationResult:
-    manifest = read_profile_manifest(profile_path)
-    if manifest.get("source", {}).get("platform") != "win32":
-        raise MigrationError("跨版本一键迁移第一版只接受 Windows 配置快照")
-    source_version = normalize_version(
-        manifest.get("source", {}).get("blender_version", [])
-    )
-    if os.name == "nt" and windows_executable_is_running(target_executable, [current_pid]):
-        raise MigrationError("目标 Blender 正在运行，请关闭后重试")
+        raise MigrationError(f"目标 Blender 正在运行，请关闭后重试：{target_executable}")
     probe = run_target_probe(target_executable)
     target_version = validate_forward_version(source_version, probe["version"])
     target_root = _resolved(probe["user_root"])
     validate_target_resource_layout(probe, target_root)
-    if target_root == _resolved(current_user_root):
-        raise MigrationError("当前与目标 Blender 正在使用同一用户目录，不能执行迁移")
-    if path_is_within(profile_path, target_root):
+    for forbidden in forbidden_roots:
+        if target_root == _resolved(forbidden):
+            raise MigrationError("来源与目标 Blender 正在使用同一用户目录，不能执行迁移")
+    if path_is_within(profile.path, target_root):
         raise MigrationError("配置包不能存放在即将被替换的目标用户目录内")
-    output = ensure_external_output(output_dir, [current_user_root, target_root])
-    profile = ProfileResult(
-        path=_resolved(profile_path),
-        manifest=manifest,
-        warnings=list(manifest.get("warnings", [])),
+    output = ensure_external_output(
+        Path(output_dir), [*_resolved_roots(forbidden_roots), target_root]
     )
     return _install_profile(
         profile=profile,
@@ -849,6 +831,144 @@ def execute_existing_profile_migration(
         current_pid=current_pid,
         audit_timeout=audit_timeout,
     )
+
+
+def _resolved_roots(roots: Iterable[Path]) -> list[Path]:
+    return [_resolved(root) for root in roots]
+
+
+def execute_migration_multi(
+    snapshot: SourceSnapshot,
+    target_executables: Iterable[Path],
+    output_dir: Path,
+    worker_script: Path,
+    current_pid: int,
+    audit_timeout: int = 300,
+) -> tuple[ProfileResult, list[TargetMigrationOutcome]]:
+    """一份快照迁移到多个目标：先建一次 Profile，再逐目标独立安装。
+
+    单目标失败不影响其他目标；逐目标结果通过 TargetMigrationOutcome 返回。
+    """
+    targets = [Path(target) for target in target_executables]
+    if not targets:
+        raise MigrationError("未选择任何目标 Blender")
+    output = ensure_external_output(Path(output_dir), [snapshot.user_root])
+    profile = create_profile(snapshot, output)
+    outcomes: list[TargetMigrationOutcome] = []
+    for target in targets:
+        try:
+            result = _install_profile_for_target(
+                profile=profile,
+                source_version=snapshot.version,
+                target_executable=target,
+                output_dir=output,
+                forbidden_roots=[snapshot.user_root],
+                worker_script=worker_script,
+                current_pid=current_pid,
+                audit_timeout=audit_timeout,
+            )
+            outcomes.append(TargetMigrationOutcome(target_executable=target, result=result))
+        except Exception as exc:
+            outcomes.append(
+                TargetMigrationOutcome(target_executable=target, error=str(exc), exception=exc)
+            )
+    return profile, outcomes
+
+
+def execute_migration(
+    snapshot: SourceSnapshot,
+    target_executable: Path,
+    output_dir: Path,
+    worker_script: Path,
+    current_pid: int,
+    audit_timeout: int = 300,
+) -> MigrationResult:
+    profile, outcomes = execute_migration_multi(
+        snapshot,
+        [target_executable],
+        output_dir,
+        worker_script,
+        current_pid,
+        audit_timeout=audit_timeout,
+    )
+    outcome = outcomes[0]
+    if outcome.result is not None:
+        return outcome.result
+    if isinstance(outcome.exception, MigrationError):
+        raise outcome.exception
+    raise MigrationError(outcome.error or "迁移失败")
+
+
+def execute_existing_profile_migration_multi(
+    profile_path: Path,
+    target_executables: Iterable[Path],
+    output_dir: Path,
+    current_user_root: Path,
+    worker_script: Path,
+    current_pid: int,
+    audit_timeout: int = 300,
+) -> tuple[ProfileResult, list[TargetMigrationOutcome]]:
+    """已有配置包迁移到多个目标，逐目标独立安装。"""
+    targets = [Path(target) for target in target_executables]
+    if not targets:
+        raise MigrationError("未选择任何目标 Blender")
+    manifest = read_profile_manifest(profile_path)
+    if manifest.get("source", {}).get("platform") != "win32":
+        raise MigrationError("跨版本一键迁移第一版只接受 Windows 配置快照")
+    source_version = normalize_version(
+        manifest.get("source", {}).get("blender_version", [])
+    )
+    output = ensure_external_output(Path(output_dir), [current_user_root])
+    profile = ProfileResult(
+        path=_resolved(profile_path),
+        manifest=manifest,
+        warnings=list(manifest.get("warnings", [])),
+    )
+    outcomes: list[TargetMigrationOutcome] = []
+    for target in targets:
+        try:
+            result = _install_profile_for_target(
+                profile=profile,
+                source_version=source_version,
+                target_executable=target,
+                output_dir=output,
+                forbidden_roots=[current_user_root],
+                worker_script=worker_script,
+                current_pid=current_pid,
+                audit_timeout=audit_timeout,
+            )
+            outcomes.append(TargetMigrationOutcome(target_executable=target, result=result))
+        except Exception as exc:
+            outcomes.append(
+                TargetMigrationOutcome(target_executable=target, error=str(exc), exception=exc)
+            )
+    return profile, outcomes
+
+
+def execute_existing_profile_migration(
+    profile_path: Path,
+    target_executable: Path,
+    output_dir: Path,
+    current_user_root: Path,
+    worker_script: Path,
+    current_pid: int,
+    audit_timeout: int = 300,
+) -> MigrationResult:
+    profile, outcomes = execute_existing_profile_migration_multi(
+        profile_path,
+        [target_executable],
+        output_dir,
+        current_user_root,
+        worker_script,
+        current_pid,
+        audit_timeout=audit_timeout,
+    )
+    outcome = outcomes[0]
+    if outcome.result is not None:
+        return outcome.result
+    if isinstance(outcome.exception, MigrationError):
+        raise outcome.exception
+    raise MigrationError(outcome.error or "迁移失败")
 
 
 def _install_profile(
@@ -928,6 +1048,14 @@ def _install_profile(
         metadata["completed_at"] = datetime.now().isoformat(timespec="seconds")
         metadata["report_path"] = str(report_path)
         _write_recovery_metadata(recovery_path, metadata)
+        html_report_path = report_path.with_suffix(".html")
+        try:
+            write_migration_report_html(report, metadata, html_report_path)
+            metadata["report_html_path"] = str(html_report_path)
+            _write_recovery_metadata(recovery_path, metadata)
+        except Exception as html_exc:
+            print(f"[MMY Migration] HTML 报告生成失败（不影响迁移）: {html_exc}")
+            html_report_path = None
         return MigrationResult(
             status=report["status"],
             profile_path=profile.path,
@@ -936,6 +1064,7 @@ def _install_profile(
             target_version=target_version,
             disabled_addons=list(report.get("disabled_addons", [])),
             warnings=list(profile.warnings) + list(report.get("warnings", [])),
+            report_html_path=html_report_path,
         )
     except Exception as exc:
         failed_root = None
@@ -950,6 +1079,15 @@ def _install_profile(
         if failed_root:
             metadata["failed_target_root"] = str(failed_root)
         _write_recovery_metadata(recovery_path, metadata)
+        report_path = recovery_dir / "migration_report.json"
+        if report_path.is_file():
+            try:
+                partial_report = json.loads(report_path.read_text(encoding="utf-8"))
+                write_migration_report_html(
+                    partial_report, metadata, report_path.with_suffix(".html")
+                )
+            except Exception:
+                pass
         if isinstance(exc, MigrationError):
             if exc.recovery_dir is None:
                 exc.recovery_dir = recovery_dir
@@ -1014,13 +1152,12 @@ def restore_recovery(recovery_file: Path, current_pid: int) -> dict[str, Any]:
     return result
 
 
-def suggest_blender_executable(current_executable: Path, remembered: str = "") -> str:
-    if remembered and Path(remembered).is_file():
-        return remembered
+def find_blender_executables(current_executable: Path) -> list[Path]:
+    """扫描常见安装目录，返回全部候选 blender.exe（按目录版本号降序）。"""
     if os.name != "nt":
-        return ""
+        return []
     candidates: set[Path] = set()
-    roots = [current_executable.parent.parent]
+    roots = [Path(current_executable).parent.parent]
     program_files = os.environ.get("ProgramFiles")
     local_app_data = os.environ.get("LOCALAPPDATA")
     if program_files:
@@ -1038,10 +1175,408 @@ def suggest_blender_executable(current_executable: Path, remembered: str = "") -
     choices = [item for item in candidates if _resolved(item) != current]
 
     def sort_key(path: Path) -> tuple[int, ...]:
-        import re
-
         numbers = re.findall(r"\d+", str(path.parent))
         return tuple(int(value) for value in numbers[-3:])
 
     choices.sort(key=sort_key, reverse=True)
+    return choices
+
+
+def suggest_blender_executable(current_executable: Path, remembered: str = "") -> str:
+    if remembered and Path(remembered).is_file():
+        return remembered
+    choices = find_blender_executables(current_executable)
     return str(choices[0]) if choices else ""
+
+
+# ============================================================
+# 插件兼容性预测（迁移预检用）
+# ============================================================
+
+def _version_triplet(value) -> tuple[int, int, int]:
+    if isinstance(value, str):
+        value = value.split(".")
+    parts = []
+    for part in list(value or [])[:3]:
+        try:
+            parts.append(int(part))
+        except (TypeError, ValueError):
+            parts.append(0)
+    parts.extend([0] * (3 - len(parts)))
+    return tuple(parts[:3])
+
+
+def predict_addon_compatibility(
+    addons: list[dict[str, Any]], target_version: Iterable[int]
+) -> list[dict[str, str]]:
+    """按插件声明的 blender_version_min/max 预测与目标版本的兼容性。
+
+    仅检查已启用插件；返回预计不兼容的条目列表。
+    """
+    target = _version_triplet(target_version)
+    incompatible: list[dict[str, str]] = []
+    for addon in addons or []:
+        if not isinstance(addon, dict) or not addon.get("enabled"):
+            continue
+        module = str(addon.get("module") or "")
+        if not module:
+            continue
+        minimum = addon.get("blender_version_min")
+        maximum = addon.get("blender_version_max")
+        reason = ""
+        if minimum and target < _version_triplet(minimum):
+            reason = f"声明要求 Blender >= {minimum}"
+        elif maximum and target > _version_triplet(maximum):
+            reason = f"声明仅支持 Blender <= {maximum}"
+        if reason:
+            incompatible.append(
+                {
+                    "module": module,
+                    "kind": str(addon.get("kind", "legacy")),
+                    "reason": reason,
+                }
+            )
+    return incompatible
+
+
+# ============================================================
+# 迁移 HTML 报告（M3）
+# ============================================================
+
+def _esc(value: Any) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def _report_html_status_banner(status: str) -> tuple[str, str, str]:
+    mapping = {
+        "success": ("#15803d", "#ecfdf3", "✅ 迁移成功"),
+        "degraded": ("#b45309", "#fffbeb", "⚠️ 迁移完成（降级：部分内容未通过验证）"),
+        "rolled_back": ("#b45309", "#fffbeb", "↩️ 迁移失败，已自动回滚"),
+        "failed": ("#b91c1c", "#fef2f2", "❌ 迁移失败"),
+    }
+    return mapping.get(status, ("#4e5560", "#f0f2f5", f"状态：{status}"))
+
+
+def build_migration_report_html(
+    report: dict[str, Any], metadata: dict[str, Any]
+) -> str:
+    """根据目标审计报告 + recovery 元数据生成 HTML 报告文本。"""
+    status = str(report.get("status") or metadata.get("status") or "unknown")
+    color, bg, banner = _report_html_status_banner(status)
+    source_version = version_string(report.get("source_version") or metadata.get("source_version") or [])
+    target_version = version_string(report.get("target_version") or metadata.get("target_version") or [])
+    target_root = report.get("target_user_root") or metadata.get("target_root", "")
+    created_at = metadata.get("created_at", "")
+    completed_at = metadata.get("completed_at") or report.get("audited_at", "")
+
+    disabled = report.get("disabled_addons") or []
+    keymap = report.get("keymap") or {}
+    missing_paths = report.get("missing_paths") or []
+    warnings = list(report.get("warnings") or [])
+    error_text = report.get("error") or metadata.get("error") or ""
+
+    rows_disabled = "".join(
+        "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+            _esc(item.get("module", "")),
+            _esc(item.get("kind", "")),
+            _esc(item.get("reason", "")),
+            "已禁用" if item.get("disabled") else _esc(item.get("disable_error", "禁用失败")),
+        )
+        for item in disabled
+    )
+    rows_paths = "".join(
+        "<tr><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+            _esc(item.get("owner", "")),
+            _esc(item.get("property", "")),
+            _esc(item.get("path", "")),
+        )
+        for item in missing_paths
+    )
+    items_warnings = "".join(f"<li>{_esc(item)}</li>" for item in warnings)
+
+    keymap_html = ""
+    if keymap:
+        keymap_html = f"""
+  <h2>快捷键指纹比对</h2>
+  <table>
+    <tr><th>源条目数</th><th>目标条目数</th><th>丢失条目数</th></tr>
+    <tr><td>{_esc(keymap.get('source_count', 0))}</td><td>{_esc(keymap.get('target_count', 0))}</td><td>{_esc(keymap.get('missing_count', 0))}</td></tr>
+  </table>"""
+        orphan = keymap.get("orphan_operators") or []
+        if orphan:
+            keymap_html += (
+                "\n  <p>以下快捷键指向的操作在目标版本中不存在：</p><ul>"
+                + "".join(f"<li><code>{_esc(op)}</code></li>" for op in orphan)
+                + "</ul>"
+            )
+
+    disabled_html = ""
+    if disabled:
+        disabled_html = f"""
+  <h2>被禁用的不兼容插件（{len(disabled)}）</h2>
+  <table>
+    <tr><th>模块</th><th>类型</th><th>原因</th><th>处理</th></tr>
+    {rows_disabled}
+  </table>"""
+
+    paths_html = ""
+    if missing_paths:
+        paths_html = f"""
+  <h2>失效绝对路径（{len(missing_paths)}）</h2>
+  <table>
+    <tr><th>所属</th><th>属性</th><th>路径</th></tr>
+    {rows_paths}
+  </table>"""
+
+    warnings_html = ""
+    if warnings:
+        warnings_html = f"""
+  <h2>警告（{len(warnings)}）</h2>
+  <ul>{items_warnings}</ul>"""
+
+    error_html = ""
+    if error_text:
+        error_html = f"""
+  <h2>错误信息</h2>
+  <pre>{_esc(error_text)}</pre>"""
+
+    guide_html = f"""
+  <h2>恢复指引</h2>
+  <p>如需回到迁移前状态：打开 Blender 顶部菜单「配置管理 → 备份记录」，找到本次迁移对应的
+  <b>{_esc(source_version)} → {_esc(target_version)}</b> 条目，点击【恢复】。
+  恢复记录文件位于本报告同目录的 <code>recovery.json</code>。</p>
+  <p>回到旧版本 = 恢复该版本自己的备份；请勿将高版本配置直接拷回旧版本使用。</p>"""
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>MMY 迁移报告 {source_version} → {target_version}</title>
+<style>
+  body {{ font-family: "Microsoft YaHei", "PingFang SC", sans-serif; margin: 0; background: #f6f7f9; color: #1f2329; line-height: 1.7; }}
+  .wrap {{ max-width: 860px; margin: 0 auto; padding: 28px 22px 60px; }}
+  .banner {{ background: {bg}; color: {color}; border: 1px solid {color}; border-radius: 10px; padding: 14px 20px; font-size: 17px; font-weight: 600; }}
+  h1 {{ font-size: 21px; margin: 18px 0 4px; }}
+  h2 {{ font-size: 16px; margin: 26px 0 8px; border-left: 4px solid #2563eb; padding-left: 10px; }}
+  table {{ width: 100%; border-collapse: collapse; font-size: 13px; background: #fff; }}
+  th, td {{ border: 1px solid #e3e6ea; padding: 7px 10px; text-align: left; word-break: break-all; }}
+  th {{ background: #f0f2f5; }}
+  code {{ background: #eef1f4; padding: 1px 6px; border-radius: 4px; font-size: 12px; }}
+  pre {{ background: #0f172a; color: #e2e8f0; padding: 14px; border-radius: 8px; overflow-x: auto; font-size: 12.5px; }}
+  .meta {{ color: #4e5560; font-size: 13.5px; }}
+  .card {{ background: #fff; border: 1px solid #e3e6ea; border-radius: 10px; padding: 14px 20px; margin-top: 14px; }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="banner">{_esc(banner)}</div>
+  <h1>MMY 跨版本迁移报告</h1>
+  <p class="meta">Blender {_esc(source_version)} → {_esc(target_version)} ｜ 开始：{_esc(created_at)} ｜ 完成：{_esc(completed_at)}</p>
+  <p class="meta">目标用户目录：<code>{_esc(target_root)}</code></p>
+  <div class="card">
+    {error_html}
+    {disabled_html if disabled_html else '<h2>插件检查</h2><p>✅ 无需禁用的插件</p>' if status in {'success', 'degraded'} else ''}
+    {keymap_html}
+    {paths_html}
+    {warnings_html}
+    {guide_html}
+  </div>
+  <p class="meta" style="margin-top:24px">由 MMY Blender Configure 生成 ｜ 同目录 migration_report.json 为机器可读版本</p>
+</div>
+</body>
+</html>
+"""
+
+
+def write_migration_report_html(
+    report: dict[str, Any], metadata: dict[str, Any], html_path: Path
+) -> Path:
+    html_path = Path(html_path)
+    html_path.write_text(
+        build_migration_report_html(report, metadata), encoding="utf-8"
+    )
+    return html_path
+
+
+# ============================================================
+# 备份历史扫描（B2）
+# ============================================================
+
+def _parse_backup_zip_name(name: str) -> tuple[str, str] | None:
+    """从备份文件名解析 (类型, 版本)。无法识别返回 None。"""
+    match = re.match(
+        r"^(MMY_Backup_Portable|MMY_Backup_Profile|Blender_Portable|MMY_Blender_Profile)"
+        r"_v(\d+\.\d+(?:\.\d+)?)",
+        name,
+    )
+    if not match:
+        return None
+    prefix, version = match.group(1), match.group(2)
+    backup_type = (
+        "portable" if "Portable" in prefix else "profile"
+    )
+    return backup_type, version
+
+
+def list_backup_entries(output_dir: Path) -> list[dict[str, Any]]:
+    """扫描备份输出目录，返回全部备份与迁移恢复条目（按时间倒序）。
+
+    条目字段：type(portable/profile/recovery), name, path, version_label,
+    created(epoch), size, status(仅 recovery), detail。
+    """
+    output = Path(output_dir)
+    entries: list[dict[str, Any]] = []
+    if not output.is_dir():
+        return entries
+
+    for item in output.glob("*.zip"):
+        parsed = _parse_backup_zip_name(item.name)
+        if not parsed:
+            continue
+        backup_type, version = parsed
+        try:
+            stat_result = item.stat()
+        except OSError:
+            continue
+        detail = ""
+        if backup_type == "portable":
+            manifest = read_portable_backup_manifest(item)
+            if manifest:
+                machine = manifest.get("machine", "")
+                detail = f"{manifest.get('file_count', '?')} 个文件" + (
+                    f" ｜ {machine}" if machine else ""
+                )
+        entries.append(
+            {
+                "type": backup_type,
+                "name": item.name,
+                "path": str(item),
+                "version_label": f"v{version}",
+                "created": stat_result.st_mtime,
+                "size": stat_result.st_size,
+                "status": "",
+                "detail": detail,
+            }
+        )
+
+    recovery_root = output / RECOVERY_DIR_NAME
+    if recovery_root.is_dir():
+        for run_dir in sorted(recovery_root.iterdir()):
+            if not run_dir.is_dir():
+                continue
+            recovery_file = run_dir / "recovery.json"
+            if not recovery_file.is_file():
+                continue
+            try:
+                metadata = json.loads(recovery_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            source_v = version_string(metadata.get("source_version", []))
+            target_v = version_string(metadata.get("target_version", []))
+            backup_info = metadata.get("backup") or {}
+            backup_path = Path(backup_info.get("path", recovery_file))
+            try:
+                size = backup_path.stat().st_size if backup_path.is_file() else 0
+                created = recovery_file.stat().st_mtime
+            except OSError:
+                size, created = 0, recovery_file.stat().st_mtime
+            entries.append(
+                {
+                    "type": "recovery",
+                    "name": run_dir.name,
+                    "path": str(recovery_file),
+                    "version_label": f"{source_v} → {target_v}",
+                    "created": created,
+                    "size": size,
+                    "status": str(metadata.get("status", "")),
+                    "detail": "迁移前目标备份",
+                }
+            )
+
+    entries.sort(key=lambda entry: entry["created"], reverse=True)
+    return entries
+
+
+def read_portable_backup_manifest(zip_path: Path) -> dict[str, Any]:
+    """读取 Portable 备份 zip 内的 manifest.json；不存在或损坏返回 {}。"""
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            names = zf.namelist()
+            if "manifest.json" not in names:
+                return {}
+            data = json.loads(zf.read("manifest.json").decode("utf-8"))
+            return data if isinstance(data, dict) else {}
+    except (OSError, zipfile.BadZipFile, UnicodeError, json.JSONDecodeError):
+        return {}
+
+
+def extract_portable_backup(zip_path: Path, dest_dir: Path) -> int:
+    """安全解压 Portable 备份到指定目录，返回文件数。"""
+    zip_path = Path(zip_path)
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    count = 0
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            if info.filename == "manifest.json":
+                continue
+            relative = _safe_archive_path(info.filename)
+            if _zipinfo_is_symlink(info):
+                raise MigrationError(f"备份包含符号链接：{info.filename}")
+            target = dest_dir.joinpath(*relative.parts)
+            if not path_is_within(target, dest_dir):
+                raise MigrationError(f"备份目标路径越界：{info.filename}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info, "r") as source, target.open("wb") as destination:
+                shutil.copyfileobj(source, destination, 1024 * 1024)
+            count += 1
+    return count
+
+
+# ============================================================
+# 迁移残留清理（P2）
+# ============================================================
+
+def cleanup_stale_migration_artifacts(
+    parents: Iterable[Path], max_age_hours: float = 24.0
+) -> list[str]:
+    """清理给定目录下超过 max_age_hours 小时的迁移事务残留目录。
+
+    匹配 .{name}.mmy_old_/stage_/failed_/restore_/removed_ 形式的隐藏目录。
+    返回已删除的路径列表；删除失败（占用等）静默跳过。
+    """
+    removed: list[str] = []
+    now = time.time()
+    max_age_seconds = max_age_hours * 3600
+    seen: set[str] = set()
+    for parent in parents or []:
+        parent = Path(parent)
+        if not parent.is_dir():
+            continue
+        try:
+            children = list(parent.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if not child.is_dir():
+                continue
+            if not _STALE_ARTIFACT_PATTERN.match(child.name):
+                continue
+            key = str(_resolved(child))
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                age = now - child.stat().st_mtime
+            except OSError:
+                continue
+            if age < max_age_seconds:
+                continue
+            try:
+                shutil.rmtree(child, ignore_errors=False)
+                removed.append(str(child))
+            except OSError:
+                continue
+    return removed

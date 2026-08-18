@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MMY 配置管理插件 — 现状分析与改进建议</title>
+<style>
+  :root {
+    --ink: #1f2329; --ink2: #4e5560; --line: #e3e6ea;
+    --bg: #f6f7f9; --card: #ffffff; --accent: #2563eb;
+    --green: #15803d; --green-bg: #ecfdf3;
+    --amber: #b45309; --amber-bg: #fffbeb;
+    --red: #b91c1c; --red-bg: #fef2f2;
+    --blue-bg: #eff6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+    line-height: 1.75; font-size: 15px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 32px 24px 80px; }
+  header.hero {
+    background: linear-gradient(135deg, #1e3a8a, #2563eb);
+    color: #fff; border-radius: 14px; padding: 28px 32px; margin-bottom: 28px;
+  }
+  header.hero h1 { margin: 0 0 6px; font-size: 24px; }
+  header.hero p { margin: 2px 0; opacity: .88; font-size: 13.5px; }
+  h2 {
+    font-size: 19px; margin: 40px 0 14px; padding-left: 12px;
+    border-left: 4px solid var(--accent);
+  }
+  h3 { font-size: 16px; margin: 24px 0 10px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 18px 22px; margin: 14px 0;
+    box-shadow: 0 1px 3px rgba(16,24,40,.05);
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 8px 0; }
+  th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f0f2f5; font-weight: 600; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  code {
+    background: #eef1f4; padding: 1px 6px; border-radius: 5px;
+    font-family: Consolas, "Courier New", monospace; font-size: 12.5px;
+  }
+  .tag {
+    display: inline-block; padding: 1px 9px; border-radius: 999px;
+    font-size: 12px; font-weight: 600; margin-right: 6px; white-space: nowrap;
+  }
+  .tag.p0 { background: var(--red-bg); color: var(--red); }
+  .tag.p1 { background: var(--amber-bg); color: var(--amber); }
+  .tag.p2 { background: var(--blue-bg); color: var(--accent); }
+  .tag.ok { background: var(--green-bg); color: var(--green); }
+  .tag.warn { background: var(--amber-bg); color: var(--amber); }
+  .tag.risk { background: var(--red-bg); color: var(--red); }
+  .issue {
+    border-left: 4px solid var(--amber); background: var(--amber-bg);
+    border-radius: 0 10px 10px 0; padding: 12px 16px; margin: 10px 0;
+  }
+  .issue.critical { border-left-color: var(--red); background: var(--red-bg); }
+  .issue.good { border-left-color: var(--green); background: var(--green-bg); }
+  .issue b.title { display: block; margin-bottom: 4px; }
+  figure { margin: 14px 0; text-align: center; }
+  figure img {
+    max-width: 100%; border: 1px solid var(--line);
+    border-radius: 10px; box-shadow: 0 2px 8px rgba(16,24,40,.08);
+  }
+  figcaption { font-size: 12.5px; color: var(--ink2); margin-top: 6px; }
+  pre {
+    background: #0f172a; color: #e2e8f0; border-radius: 10px;
+    padding: 16px 18px; overflow-x: auto; font-size: 12.5px; line-height: 1.65;
+  }
+  pre .c { color: #7dd3fc; }
+  ul { padding-left: 22px; }
+  li { margin: 4px 0; }
+  .conclusion {
+    background: var(--blue-bg); border: 1px solid #bfdbfe;
+    border-radius: 12px; padding: 14px 20px; font-weight: 500;
+  }
+  footer { margin-top: 48px; font-size: 12.5px; color: var(--ink2); text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>MMY 配置管理插件 — 现状分析、问题诊断与改进建议</h1>
+  <p>日期：2026-08-18 ｜ 基于版本：MMY Blender Configure v1.2.0（Blender 5.1.0 实机截图 + 源码审查）</p>
+  <p>状态：分析报告，待确认后进入开发</p>
+</header>
+
+<!-- ============ 一、现状总览 ============ -->
+<h2>一、现状总览</h2>
+
+<figure>
+  <img src="配置管理弹窗截图_20260818.png" alt="MMY 配置管理弹窗截图（Blender 5.1.0）">
+  <figcaption>当前「MMY 配置管理」弹窗（Blender 5.1.0 实机）</figcaption>
+</figure>
+
+<div class="card">
+<h3>1.1 插件当前能力</h3>
+<table>
+  <tr><th>模块</th><th>入口</th><th>产物</th><th>说明</th></tr>
+  <tr><td>Portable 打包</td><td>打包 Portable 配置</td><td><code>Blender_Portable_v{版本}_{时间}.zip</code></td><td>整个 portable 文件夹全量压缩，独立子进程执行</td></tr>
+  <tr><td>跨版本迁移</td><td>迁移到新版</td><td>Profile 包 + Recovery 目录 + JSON 报告</td><td>快照 → 备份目标 → 原子切换 → 目标 Blender 后台审计 → 失败回滚</td></tr>
+  <tr><td>导出配置包</td><td>导出配置包</td><td><code>MMY_Blender_Profile_v{版本}_{时间}.zip</code></td><td>含 manifest.json 的迁移快照（SHA-256 清单）</td></tr>
+  <tr><td>恢复</td><td>恢复迁移前配置</td><td>—</td><td>需手动选择 <code>recovery.json</code>，先备份当前再恢复</td></tr>
+  <tr><td>报告</td><td>打开报告</td><td>—</td><td>打开报告<b>所在文件夹</b>（非报告本身）</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h3>1.2 技术架构（做得好的部分）</h3>
+<p>迁移核心 <code>migration_core.py</code> 工程质量较高，这些设计应保留：</p>
+<ul>
+  <li><b>原子切换</b>：<code>os.replace</code> 事务式安装，失败自动回滚到 <code>target_before.zip</code></li>
+  <li><b>强校验</b>：Profile 包内每个文件 SHA-256 + 大小校验，防路径穿越、防符号链接</li>
+  <li><b>真实审计</b>：迁移后启动目标 Blender 后台进程实际加载配置，失败插件自动禁用（degraded），崩溃则整体回滚</li>
+  <li><b>安全默认</b>：启动脚本 / 数据文件 / 历史记录默认不勾选；目标正在运行时拒绝迁移</li>
+  <li><b>磁盘预检</b>：最低 128MB + payload × 1.15 空间检查</li>
+</ul>
+</div>
+
+<p class="conclusion">结论：底层迁移引擎是可靠的，问题集中在 <b>UI 层</b> 和「备份」这个概念的缺失。</p>
+
+<!-- ============ 二、UI 误导问题 ============ -->
+<h2>二、UI 误导问题诊断（对应实机操作反馈）</h2>
+
+<div class="issue critical">
+  <b class="title">问题 1：「确定」按钮什么都不做 —— 最大误导</b>
+  弹窗底部的「确定」按钮，<code>execute()</code> 直接 <code>return {"FINISHED"}</code>——只是关闭弹窗。用户点「确定」的心理预期是"开始执行"，实际什么都没发生。真正的操作是上面 5 个小按钮，但它们的视觉权重远低于蓝色的「确定」。
+</div>
+
+<div class="issue">
+  <b class="title">问题 2：三个功能挤在一个弹窗，入口语义混乱</b>
+  「打包 Portable 配置」和「导出配置包」名字相近、产物完全不同（一个是整个 portable 文件夹的 zip，一个是带 manifest 的迁移快照），用户分不清该用哪个。「迁移到新版」没有任何前置说明：需要选目标 blender.exe、会先备份、会真实启动目标 Blender 验证数分钟——点下去才发现还有一堆表单。
+</div>
+
+<div class="issue">
+  <b class="title">问题 3：弹窗套弹窗，层级丢失</b>
+  <code>invoke_props_dialog</code> 里再放 operator 按钮，点击后当前弹窗关闭、弹出新弹窗。用户操作完一步后失去"我在哪一步"的上下文，完成后也没有明确的结果页。
+</div>
+
+<div class="issue critical">
+  <b class="title">问题 4：「恢复迁移前配置」要求用户自己找 recovery.json</b>
+  普通用户根本不知道 <code>recovery.json</code> 是什么、在哪（<code>输出目录/MMY_Migration_Recovery/{源版本}_to_{目标版本}_{run_id}/recovery.json</code>）。恢复是兜底功能，却是全插件使用门槛最高的操作。
+</div>
+
+<div class="issue">
+  <b class="title">问题 5：没有「备份」这个第一公民概念</b>
+  用户的"备份"分散在三个产物里，命名规则互不统一，且<b>没有任何备份历史视图</b>——备份过几次、各自什么版本、能不能恢复，全靠自己翻文件夹。
+  <table>
+    <tr><th>产物</th><th>命名</th><th>版本辨识度</th><th>内容可读性</th></tr>
+    <tr><td>Portable 打包</td><td><code>Blender_Portable_v5.1.0_20260818_1227.zip</code></td><td><span class="tag ok">✅ 目录名推断</span></td><td><span class="tag risk">❌ zip 内无 manifest</span></td></tr>
+    <tr><td>迁移配置包</td><td><code>MMY_Blender_Profile_v5.1.0_20260818_122730.zip</code></td><td><span class="tag ok">✅ 有 manifest</span></td><td><span class="tag warn">△ manifest 面向程序</span></td></tr>
+    <tr><td>迁移前目标备份</td><td><code>MMY_Migration_Recovery/5.1.0_to_5.2.0_{run_id}/</code></td><td><span class="tag ok">✅ 目录名含双版本</span></td><td><span class="tag risk">❌ 用户看不到结构</span></td></tr>
+  </table>
+</div>
+
+<div class="issue">
+  <b class="title">问题 6：缺少上下文信息</b>
+  弹窗不显示当前 Blender 版本、上次迁移时间/结果、备份存放目录。用户每次打开都是"零基础"状态。
+</div>
+
+<div class="issue">
+  <b class="title">问题 7：报告对用户不友好</b>
+  「打开报告」打开的是文件夹不是报告；报告是 <code>migration_report.json</code>，用户要用文本编辑器看 JSON。
+</div>
+
+<!-- ============ 三、潜在风险 ============ -->
+<h2>三、潜在风险（代码层）</h2>
+
+<div class="card">
+<h3>3.1 中风险</h3>
+<table>
+  <tr><th style="width:34%">风险</th><th>说明</th></tr>
+  <tr><td>迁移前强制 <code>save_userpref()</code></td><td>当前会话未保存的偏好改动被静默落盘并进入快照，无任何提示</td></tr>
+  <tr><td>恢复时 <code>target_existed=False</code> 分支</td><td>直接删除目标用户根目录（虽有 current_backup 兜底，metadata 损坏误判时删除是即时的）</td></tr>
+  <tr><td>残留目录无清理机制</td><td>迁移中断留下 <code>.mmy_old_*</code> / <code>.mmy_stage_*</code> / <code>.mmy_failed_*</code>，不扫描不清理，还会被下一次 portable 打包<b>打进去</b></td></tr>
+  <tr><td>进程检测依赖 PowerShell</td><td><code>Get-CimInstance</code> 超时 20s；企业策略禁用 PowerShell 时迁移直接报错，无降级路径</td></tr>
+  <tr><td>启动脚本风险提示过弱</td><td><code>include_startup_scripts</code> 风险只写在属性名括号里，勾选无二次确认——该目录 .py 会在目标 Blender 启动时<b>自动执行</b>，是全插件风险最高的开关</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h3>3.2 低风险</h3>
+<ul>
+  <li><b>跳过规则不一致</b>：Profile 快照跳过 <code>.blend1</code>/<code>.log</code>/缓存目录，目标备份不跳过——体积偏大，行为差异无文档</li>
+  <li><b>无进度反馈</b>：审计默认 300s，状态栏只有静态文字，无已用时长，易误判卡死（ESC 也无法取消）</li>
+  <li><b>版本策略提示缺失</b>：代码限定"同主版本、仅升级"，4.5 → 5.1 会被拒绝，但 UI 没有任何前置说明</li>
+  <li><b>版本号靠目录名正则</b>：portable 父目录命名不规范时版本变 <code>unknown</code>，备份可辨识度归零</li>
+</ul>
+</div>
+
+<!-- ============ 四、需求映射与改进方案 ============ -->
+<h2>四、核心需求映射与改进方案</h2>
+
+<div class="card">
+<h3>需求 1：备份 —— 产物需要版本可辨识度</h3>
+<p><b>方案 B1：统一命名 + 全量 manifest</b></p>
+<pre>MMY_Backup_<span class="c">{类型}</span>_<span class="c">{源版本}</span>_<span class="c">{时间戳}</span>.zip
+  类型: Portable（全量） | Profile（迁移快照） | Recovery（迁移前目标备份）
+例: MMY_Backup_Portable_v5.1.0_20260818_1227.zip</pre>
+<p>每种 zip（含 Portable 全量包）内写入 <code>manifest.json</code>：源 Blender 版本、安装模式、机器名、包含组件、文件数、总大小、创建时间。打开任何 zip 都能回答"什么版本、什么内容、哪来的"。</p>
+<p><b>方案 B2：备份历史视图</b>——扫描备份目录，表格列出所有 <code>MMY_Backup_*.zip</code> + Recovery 目录（版本 / 类型 / 时间 / 大小），每项提供【恢复】【打开位置】。恢复不再要求手找 recovery.json。</p>
+</div>
+
+<div class="card">
+<h3>需求 2：配置迁移 —— 明确版本、明示风险、给出最优选择</h3>
+<p><b>方案 M1：迁移前预检报告（先检测，后确认）</b>——点「迁移到新版」后先跑只读预检（探针已存在，成本极低），生成确认页：</p>
+<table>
+  <tr><th>项目</th><th>内容</th></tr>
+  <tr><td>源 → 目标</td><td>Blender 5.1.0 → 5.2.0（同主版本 ✅ / 跨主版本 ❌ 拒绝并说明原因）</td></tr>
+  <tr><td>目标现状</td><td>目标已有配置 XX MB，将被覆盖（已含自动备份）</td></tr>
+  <tr><td>磁盘</td><td>需要约 XX MB，可用 XX MB</td></tr>
+  <tr><td>插件兼容预测</td><td>按 <code>blender_version_min/max</code> 对比目标版本，列出预计不兼容插件</td></tr>
+  <tr><td>组件清单</td><td>按风险分级展示（见 M2），<b>默认只勾选安全项</b></td></tr>
+</table>
+<p>用户看完点【确认迁移】才真正动手。</p>
+
+<p><b>方案 M2：组件按风险分级（"只同步无风险类别" = 默认项）</b></p>
+<table>
+  <tr><th>级别</th><th>组件</th><th>默认</th><th>理由</th></tr>
+  <tr><td><span class="tag ok">🟢 安全</span></td><td>偏好设置 + 快捷键（userpref.blend + keymap 双保险）</td><td>✅ 必选</td><td>有目标审计 + 指纹比对兜底</td></tr>
+  <tr><td><span class="tag ok">🟢 安全</span></td><td>启动文件 startup.blend</td><td>✅ 必选</td><td>目标版本自行转换</td></tr>
+  <tr><td><span class="tag ok">🟢 安全</span></td><td>插件与扩展（addons / extensions）</td><td>✅ 默认</td><td>失败自动禁用，可回滚</td></tr>
+  <tr><td><span class="tag ok">🟢 安全</span></td><td>用户预设 presets</td><td>✅ 默认</td><td>纯数据文件</td></tr>
+  <tr><td><span class="tag warn">🟡 谨慎</span></td><td>datafiles / Studio Lights</td><td>⬜</td><td>体积大，通常自带</td></tr>
+  <tr><td><span class="tag warn">🟡 谨慎</span></td><td>书签与最近文件</td><td>⬜</td><td>含本机路径隐私</td></tr>
+  <tr><td><span class="tag risk">🔴 高风险</span></td><td>startup 启动脚本</td><td>⬜ + 二次确认</td><td>目标启动时自动执行代码</td></tr>
+</table>
+
+<p><b>方案 M3：迁移报告 HTML 化</b>——迁移完成后同时生成 <code>migration_report.html</code>（版本对照、组件结果、被禁用插件、快捷键指纹比对、恢复指引），「打开报告」直达 HTML。</p>
+</div>
+
+<div class="card">
+<h3>UI 重设计（汇总）</h3>
+<pre>配置管理（主面板，显示当前版本 + 上次操作状态）
+├─ 📦 备份
+│   ├─ 立即备份（全量 Portable）→ 摘要确认 → 执行
+│   └─ 备份记录（列表：版本/类型/时间/大小 → 恢复/打开位置）
+├─ 🔄 迁移
+│   ├─ 迁移到新版 → <span class="c">预检报告页（M1）</span> → 确认 → 执行（进度+已用时长）
+│   └─ 导出配置包 → 组件分级选择（M2）→ 执行
+└─ 🧹 维护
+    ├─ 清理迁移残留（扫描 .mmy_old_/.mmy_stage_ 等）
+    └─ 打开报告（HTML）</pre>
+<p><b>关键交互原则</b>：去掉无意义的「确定」；每个破坏性操作前必有摘要确认页；执行中显示已用时长；完成有结果页。</p>
+</div>
+
+<!-- ============ 五、多版本流向与降级 ============ -->
+<h2>五、多版本配置流向与降级策略</h2>
+<p style="color:var(--ink2);font-size:13.5px;margin-top:-6px">补充：回答「5.1 备份的配置怎么进 5.2/5.3？反过来 5.2/5.3 的配置怎么回 5.1？」——基于 <code>validate_forward_version</code> 的真实代码边界</p>
+
+<div class="card">
+<h3>5.1 版本流向矩阵</h3>
+<table>
+  <tr><th>流向</th><th>是否支持</th><th>操作路径</th></tr>
+  <tr><td>5.1 → 5.2</td><td><span class="tag ok">✅ 支持</span></td><td>迁移到新版（当前 Blender / 已有配置包均可）</td></tr>
+  <tr><td>5.1 → 5.3（跳版本）</td><td><span class="tag ok">✅ 支持</span></td><td>同上。同主版本即可，<b>不需要</b>经过 5.2 中转</td></tr>
+  <tr><td>一份 5.1 配置包 → 5.2 和 5.3 各迁一份</td><td><span class="tag ok">✅ 支持</span></td><td>配置包是不可变快照，可重复使用；每个目标各自独立备份、独立回滚，互不干扰</td></tr>
+  <tr><td>5.2 → 5.3</td><td><span class="tag ok">✅ 支持</span></td><td>从 5.2 当前环境重新导出配置包再迁移</td></tr>
+  <tr><td><b>5.2 / 5.3 → 5.1（降级）</b></td><td><span class="tag risk">❌ 拒绝</span></td><td>设计上拒绝，见 5.3 降级策略</td></tr>
+  <tr><td>4.5 → 5.1（跨主版本）</td><td><span class="tag risk">❌ 拒绝</span></td><td><code>validate_forward_version</code> 直接拒绝</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h3>5.2 正向迁移的正确姿势（5.1 配置进 5.2 和 5.3）</h3>
+<p><b>场景 A：5.2、5.3 都是全新安装，想要 5.1 的配置</b></p>
+<ul>
+  <li>① 在 5.1 里「导出配置包」→ 得到 <code>MMY_Blender_Profile_v5.1.0_{时间}.zip</code></li>
+  <li>② 「迁移到新版」→ 配置来源选「已有配置包」→ 目标选 5.2 的 <code>blender.exe</code> → 执行</li>
+  <li>③ <b>同一个配置包再执行一次</b>，目标改选 5.3 的 <code>blender.exe</code> → 执行</li>
+</ul>
+<p>配置包可复用，两份迁移各自生成独立的 Recovery 目录，互不影响。</p>
+<p><b>场景 B：链式升级 —— 已在 5.2 里工作了一段时间，5.3 发布</b></p>
+<div class="issue">
+  <b class="title">⚠️ 此时不要再用当初的 5.1 配置包去迁 5.3</b>
+  那会丢失你在 5.2 期间积累的全部新设置。正确做法：从 <b>5.2 当前环境</b>重新导出配置包，再迁 5.3。
+</div>
+<p class="conclusion">决策规则：<b>永远从"你最近实际使用的那个版本"导出</b>，而不是从最早的版本复用旧包。旧配置包只适用于"目标全新、中间没产生过新设置"的场景。</p>
+</div>
+
+<div class="card">
+<h3>5.3 反向（5.2/5.3 → 5.1）：为什么拒绝，正确的替代是什么</h3>
+<p><b>为什么设计上拒绝降级迁移：</b></p>
+<ul>
+  <li><code>userpref.blend</code> 由高版本写入后可能含低版本不识别的字段与结构，旧版读取时静默丢弃甚至损坏</li>
+  <li>高版本插件代码在旧版 Blender 上可能直接报错（API 不存在）</li>
+  <li>Blender 官方策略本身就是"配置只向前兼容"，逆向翻译是高风险低收益</li>
+</ul>
+<p><b>降级的真实需求其实是"找回旧版本当时的配置"。这不需要"翻译"，需要的是"恢复"</b>——而这正是需求 1（版本可辨识备份）存在的意义：</p>
+<table>
+  <tr><th>替代路径</th><th>说明</th></tr>
+  <tr><td>① 全量备份回灌（主路径）</td><td>用当时的 <code>MMY_Backup_Portable_v5.1.0_*.zip</code> 直接解压回 5.1 的 portable 目录。备份是什么版本，恢复的就是什么版本</td></tr>
+  <tr><td>② 原地不动</td><td>正向迁移<b>从不修改源版本</b>——5.1 的用户目录在你迁去 5.2 后原封不动，直接打开 5.1 即可</td></tr>
+  <tr><td>③ 迁移自动兜底</td><td>5.1→5.2 迁移时对目标做的 <code>target_before.zip</code>，可随时通过恢复入口还原</td></tr>
+  <tr><td>④ 快捷键单点兜底</td><td>配置包内 <code>fallback/keymap.py</code> 可在旧版 Blender 里手动导入</td></tr>
+</table>
+<p class="conclusion">结论：<b>不做"高版本配置翻译回低版本"功能；降级 = 恢复该版本自己的备份。</b>UI 文案应把这条心智写明，避免用户去找一个不存在的"迁回旧版"按钮。</p>
+</div>
+
+<div class="card">
+<h3>5.4 原计划需要补强的三点</h3>
+<table>
+  <tr><th style="width:16%">编号</th><th>补强项</th></tr>
+  <tr><td><b>M4</b></td><td><b>配置包信息前置展示</b>：PROFILE 模式选中配置包后先读 manifest，展示"来源版本 / 创建时间 / 包含组件"；若检测到本机存在比配置包更新的同主版本安装，提示"若你已在更高版本工作过，建议从该版本重新导出"——防止场景 B 误用</td></tr>
+  <tr><td><b>M5</b></td><td><b>多目标批量迁移（可选增强）</b>：预检页列出本机探测到的全部可迁入目标（同主版本且更高版本的 blender.exe），勾选多个目标一次执行，替代"同一配置包手动跑两遍"</td></tr>
+  <tr><td><b>B3</b></td><td><b>备份即降级答案</b>：备份历史视图与恢复入口文案统一为"回到旧版本 = 恢复该版本的备份"，主面板不再出现任何暗示"可以迁回旧版"的措辞</td></tr>
+</table>
+</div>
+
+<!-- ============ 六、优先级 ============ -->
+<h2>六、实施优先级建议</h2>
+
+<div class="card">
+<table>
+  <tr><th>优先级</th><th>事项</th><th>对应问题</th></tr>
+  <tr><td><span class="tag p0">P0</span></td><td>移除/重设计「确定」按钮；主面板显示当前版本与上次状态</td><td>问题 1、6</td></tr>
+  <tr><td><span class="tag p0">P0</span></td><td>迁移预检确认页（M1）+ 组件风险分级（M2）</td><td>需求 2</td></tr>
+  <tr><td><span class="tag p0">P0</span></td><td>恢复入口改为备份列表选择，不再手找 recovery.json</td><td>问题 4</td></tr>
+  <tr><td><span class="tag p0">P0</span></td><td>配置包信息前置展示 + 新旧提示（M4）；恢复文案写明「降级=恢复备份」（B3）</td><td>章节 5.3、5.4</td></tr>
+  <tr><td><span class="tag p1">P1</span></td><td>统一命名 + 全量 manifest（B1）+ 备份历史视图（B2）</td><td>需求 1</td></tr>
+  <tr><td><span class="tag p1">P1</span></td><td>迁移报告 HTML 化（M3）；打开报告直达文件</td><td>问题 7</td></tr>
+  <tr><td><span class="tag p2">P2</span></td><td>多目标批量迁移（M5）</td><td>章节 5.2 场景 A</td></tr>
+  <tr><td><span class="tag p2">P2</span></td><td>启动时清理迁移残留；执行中显示已用时长</td><td>风险 3、7</td></tr>
+  <tr><td><span class="tag p2">P2</span></td><td>save_userpref 前提示；startup 脚本二次确认</td><td>风险 1、5</td></tr>
+</table>
+</div>
+
+<footer>
+  本文档为分析稿。确认后按 AGENTS.md 流程：UI 重设计与预检确认页属「UI/交互优化 + 新功能」，需开 PR 并附需求方案文档。<br>
+  MMY Blender Configure · 开发文档 · 2026-08-18
+</footer>
+
+</div>
+</body>
+</html>

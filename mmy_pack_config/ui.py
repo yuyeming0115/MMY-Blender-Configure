@@ -23,7 +23,7 @@ _PACK_SCRIPT = Path(__file__).parent / "pack_script.py"
 # ============================================================
 
 def _build_default_filename(portable_path_str, version_override=""):
-    """生成标准输出文件名：Blender_Portable_v{版本}_{时间戳}.zip"""
+    """生成标准输出文件名：MMY_Backup_Portable_v{版本}_{时间戳}.zip"""
     version = version_override.strip() if version_override else ""
     if not version:
         portable_path = Path(portable_path_str)
@@ -36,7 +36,7 @@ def _build_default_filename(portable_path_str, version_override=""):
         else:
             version = "unknown"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    return f"Blender_Portable_v{version}_{timestamp}.zip"
+    return f"MMY_Backup_Portable_v{version}_{timestamp}.zip"
 
 
 def _resolve_output_path(raw_output, portable_path_str):
@@ -116,8 +116,10 @@ class MMY_OT_PackPortable(bpy.types.Operator):
         layout.prop(self, "output_dir")
         layout.prop(self, "version_override")
         layout.prop(self, "exclude_cache")
-        layout.label(text="文件名自动生成：Blender_Portable_v{版本}_{时间}.zip",
+        layout.label(text="文件名自动生成：MMY_Backup_Portable_v{版本}_{时间}.zip",
                      icon='INFO')
+        layout.label(text="zip 内含 manifest.json（版本/机器/文件清单），可随时辨识",
+                     icon='BLANK1')
 
     def execute(self, context):
         # ---- 校验 portable 路径 ----
@@ -199,28 +201,61 @@ class MMY_OT_PackPortable(bpy.types.Operator):
 class MMY_OT_OpenConfigManager(bpy.types.Operator):
     bl_idname = "mmy.open_config_manager"
     bl_label = "MMY 配置管理"
-    bl_description = "Portable 打包、跨版本迁移与恢复"
+    bl_description = "备份、跨版本迁移与恢复"
     bl_options = {"INTERNAL"}
 
     def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self, width=460)
+        # confirm_text 明确为「关闭」：本面板只作为入口，点关闭不触发任何操作，
+        # 避免旧版「确定」按钮造成的"点了却没反应"误导。
+        return context.window_manager.invoke_props_dialog(
+            self, width=480, confirm_text="关闭"
+        )
 
     def execute(self, context):
         return {"FINISHED"}
 
     def draw(self, context):
-        layout = self.layout
+        from . import utils
 
-        portable_box = layout.box()
-        portable_box.label(text="Portable 配置", icon='PACKAGE')
-        portable_box.operator(
+        layout = self.layout
+        addon = context.preferences.addons.get(__package__)
+        prefs = addon.preferences if addon else None
+
+        # ---------- 状态区 ----------
+        status_box = layout.box()
+        version = ".".join(str(v) for v in bpy.app.version[:3])
+        mode = "Portable" if utils.is_portable_mode() else "普通安装"
+        row = status_box.row()
+        row.label(text=f"当前 Blender {version}（{mode}）", icon='BLENDER')
+        out_dir = getattr(prefs, "pack_output_path", "") if prefs else ""
+        if not out_dir:
+            out_dir = str(Path.home() / "Desktop")
+        status_box.label(text=f"备份目录：{out_dir}", icon='FILE_FOLDER')
+        last_status = getattr(prefs, "last_migration_status", "") if prefs else ""
+        if last_status:
+            icon = 'CHECKMARK' if "成功" in last_status else (
+                'ERROR' if ("失败" in last_status or "回滚" in last_status) else 'INFO'
+            )
+            status_box.label(text=f"上次迁移：{last_status}", icon=icon)
+
+        # ---------- 备份 ----------
+        backup_box = layout.box()
+        backup_box.label(text="备份", icon='PACKAGE')
+        backup_box.operator(
             "mmy.pack_portable",
-            text="打包 Portable 配置",
+            text="立即备份（全量 Portable）",
             icon='PACKAGE',
         )
+        backup_box.operator(
+            "mmy.backup_history",
+            text="备份记录（恢复入口）",
+            icon='RECOVER_LAST',
+        )
+        backup_box.label(text="回到旧版本 = 恢复该版本的备份", icon='INFO')
 
+        # ---------- 迁移 ----------
         migration_box = layout.box()
-        migration_box.label(text="跨版本迁移", icon='FILE_REFRESH')
+        migration_box.label(text="迁移（仅同主版本、仅升级）", icon='FILE_REFRESH')
         row = migration_box.row(align=True)
         row.operator(
             "mmy.migrate_to_blender",
@@ -233,24 +268,24 @@ class MMY_OT_OpenConfigManager(bpy.types.Operator):
             icon='EXPORT',
         )
 
-        recovery_box = layout.box()
-        recovery_box.label(text="恢复与报告", icon='RECOVER_LAST')
-        row = recovery_box.row(align=True)
-        row.operator(
-            "mmy.restore_migration_backup",
-            text="恢复迁移前配置",
-            icon='RECOVER_LAST',
-        )
+        # ---------- 维护 ----------
+        maintenance_box = layout.box()
+        maintenance_box.label(text="维护", icon='SETTINGS')
+        row = maintenance_box.row(align=True)
         report_row = row.row(align=True)
-        addon = context.preferences.addons.get(__package__)
         has_report = bool(
-            addon and getattr(addon.preferences, "last_migration_report", "")
+            prefs and getattr(prefs, "last_migration_report", "")
         )
         report_row.enabled = has_report
         report_row.operator(
             "mmy.open_migration_report",
             text="打开报告",
             icon='TEXT',
+        )
+        row.operator(
+            "mmy.cleanup_migration_artifacts",
+            text="清理迁移残留",
+            icon='TRASH',
         )
 
 

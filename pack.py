@@ -265,7 +265,7 @@ def normalize_output_path(output_path, portable_path=None, version=None):
     if not output_path or not output_path.strip():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         ver = version or "unknown"
-        default_name = f"Blender_Portable_v{ver}_{timestamp}.zip"
+        default_name = f"MMY_Backup_Portable_v{ver}_{timestamp}.zip"
         config = load_config()
         out_dir = config.get("last_output_dir", str(Path.home() / "Desktop"))
         return str(Path(out_dir) / default_name)
@@ -277,7 +277,7 @@ def normalize_output_path(output_path, portable_path=None, version=None):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         ver = version or "unknown"
         base_dir = p if p.is_dir() else p.parent
-        default_name = f"Blender_Portable_v{ver}_{timestamp}.zip"
+        default_name = f"MMY_Backup_Portable_v{ver}_{timestamp}.zip"
         return str(base_dir / default_name)
     
     # 有后缀但不是 .zip
@@ -327,6 +327,7 @@ def pack_portable(portable_path, output_path, compress=False, exclude_patterns=N
     
     packed_files = 0
     skipped_files = 0
+    total_bytes = 0
     exclude_reasons = {}   # {原因描述: 计数}
     output_resolved = output_path.resolve(strict=False)
     
@@ -361,9 +362,33 @@ def pack_portable(portable_path, output_path, compress=False, exclude_patterns=N
             arcname_str = str(arcname).replace("\\", "/")
             zf.write(file_path, arcname_str)
             packed_files += 1
-            
+            try:
+                total_bytes += file_path.stat().st_size
+            except OSError:
+                pass
+
             if packed_files % 1000 == 0:
                 print(f"[MMY]   进度：已打包 {packed_files}，已跳过 {skipped_files}...")
+
+        # ---- 写入 manifest.json（备份可辨识度）----
+        import platform
+        manifest = {
+            "schema_version": 1,
+            "type": "portable",
+            "blender_version": get_blender_version(portable_path) or "unknown",
+            "install_mode": "portable",
+            "machine": platform.node(),
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "source_path": str(portable_path),
+            "file_count": packed_files,
+            "total_bytes": total_bytes,
+            "excluded_count": skipped_files,
+            "compressed": bool(compress),
+        }
+        zf.writestr(
+            "manifest.json",
+            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
+        )
     
     size_mb = output_path.stat().st_size / 1024 / 1024
     
@@ -423,7 +448,7 @@ def _run_tkinter_ui():
             version = "unknown"
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    default_name = f"Blender_Portable_v{version}_{timestamp}.zip"
+    default_name = f"MMY_Backup_Portable_v{version}_{timestamp}.zip"
     
     initial_dir = config.get("last_output_dir", str(Path.home()))
     output_path = filedialog.asksaveasfilename(

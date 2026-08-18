@@ -281,7 +281,18 @@ class MigrationCoreTest(unittest.TestCase):
         recovery_file = recovery_dir / "recovery.json"
         recovery_file.write_text(json.dumps(recovery), encoding="utf-8")
         (target / "state.txt").write_text("after", encoding="utf-8")
-        result = core.restore_recovery(recovery_file, current_pid=123)
+        probe = {
+            "version": [5, 2, 0],
+            "user_root": str(target),
+            "config_dir": str(target / "config"),
+            "scripts_dir": str(target / "scripts"),
+            "datafiles_dir": str(target / "datafiles"),
+            "extensions_dir": str(target / "extensions"),
+        }
+        with mock.patch.object(core, "run_target_probe", return_value=probe), mock.patch.object(
+            core, "windows_executable_is_running", return_value=False
+        ):
+            result = core.restore_recovery(recovery_file, current_pid=123)
         self.assertEqual(result["status"], "success")
         self.assertEqual((target / "state.txt").read_text(encoding="utf-8"), "before")
 
@@ -313,6 +324,194 @@ class MigrationCoreTest(unittest.TestCase):
         with mock.patch.object(core.shutil, "disk_usage", return_value=fake_usage):
             with self.assertRaises(core.MigrationError):
                 core.ensure_free_space(self.root, 1024 * 1024)
+
+    # ---------------- v1.3.0 新增 ----------------
+
+    def test_profile_uses_new_backup_prefix(self):
+        result = core.create_profile(self.snapshot(), self.output)
+        self.assertTrue(result.path.name.startswith("MMY_Backup_Profile_v5.1.0_"))
+
+    def test_predict_addon_compatibility(self):
+        addons = [
+            {"module": "ok_addon", "kind": "legacy", "enabled": True,
+             "blender_version_min": [4, 0, 0]},
+            {"module": "too_new", "kind": "extension", "enabled": True,
+             "blender_version_min": "5.3.0"},
+            {"module": "capped", "kind": "extension", "enabled": True,
+             "blender_version_max": "5.1.0"},
+            {"module": "disabled_addon", "kind": "legacy", "enabled": False,
+             "blender_version_min": [9, 0, 0]},
+        ]
+        result = core.predict_addon_compatibility(addons, (5, 2, 0))
+        modules = {item["module"] for item in result}
+        self.assertEqual(modules, {"too_new", "capped"})
+
+    def test_list_backup_entries_mixed_naming_and_recovery(self):
+        self.output.mkdir(parents=True, exist_ok=True)
+        (self.output / "MMY_Backup_Portable_v5.1.0_20260818_1200.zip").write_bytes(b"pk")
+        (self.output / "Blender_Portable_v5.0.0_20260101_0000.zip").write_bytes(b"pk")
+        (self.output / "MMY_Backup_Profile_v5.1.0_20260818_120100.zip").write_bytes(b"pk")
+        (self.output / "unrelated.zip").write_bytes(b"pk")
+        run_dir = self.output / core.RECOVERY_DIR_NAME / "5.1.0_to_5.2.0_run1"
+        run_dir.mkdir(parents=True)
+        (run_dir / "target_before.zip").write_bytes(b"pk")
+        (run_dir / "recovery.json").write_text(json.dumps({
+            "schema_version": 1,
+            "source_version": [5, 1, 0],
+            "target_version": [5, 2, 0],
+            "status": "success",
+            "backup": {"path": str(run_dir / "target_before.zip")},
+        }), encoding="utf-8")
+        entries = core.list_backup_entries(self.output)
+        types = sorted(entry["type"] for entry in entries)
+        self.assertEqual(types, ["portable", "portable", "profile", "recovery"])
+        recovery = [e for e in entries if e["type"] == "recovery"][0]
+        self.assertEqual(recovery["version_label"], "5.1.0 → 5.2.0")
+        self.assertEqual(recovery["status"], "success")
+
+    def test_cleanup_stale_migration_artifacts(self):
+        parent = self.root / "blender_dir"
+        parent.mkdir()
+        stale = parent / ".5.2.mmy_old_20260801_000000_abcd1234"
+        stale.mkdir()
+        (stale / "junk.txt").write_text("x", encoding="utf-8")
+        keep = parent / "5.2"
+        keep.mkdir()
+        # 默认 24 小时：刚创建的残留不清理
+        self.assertEqual(core.cleanup_stale_migration_artifacts([parent]), [])
+        # max_age=0：全部清理，但不误伤正常目录
+        removed = core.cleanup_stale_migration_artifacts([parent], max_age_hours=0)
+        self.assertEqual(len(removed), 1)
+        self.assertFalse(stale.exists())
+        self.assertTrue(keep.exists())
+
+    def test_write_migration_report_html(self):
+        report = {
+            "status": "degraded",
+            "source_version": [5, 1, 0],
+            "target_version": [5, 2, 0],
+            "target_user_root": "C:/Blender/5.2",
+            "disabled_addons": [
+                {"module": "bad_addon", "kind": "legacy",
+                 "reason": "插件未能在目标版本加载", "disabled": True}
+            ],
+            "keymap": {"source_count": 10, "target_count": 10, "missing_count": 0,
+                       "missing": [], "orphan_operators": []},
+            "missing_paths": [],
+            "warnings": ["示例警告"],
+        }
+        metadata = {"created_at": "2026-08-18T12:00:00", "status": "degraded"}
+        html_path = self.output / "migration_report.html"
+        self.output.mkdir(exist_ok=True)
+        core.write_migration_report_html(report, metadata, html_path)
+        text = html_path.read_text(encoding="utf-8")
+        self.assertIn("5.1.0", text)
+        self.assertIn("5.2.0", text)
+        self.assertIn("bad_addon", text)
+        self.assertIn("降级", text)
+
+    def test_extract_portable_backup_skips_manifest_and_restores(self):
+        backup = self.root / "MMY_Backup_Portable_v5.1.0_20260818_1200.zip"
+        with zipfile.ZipFile(backup, "w") as zf:
+            zf.writestr("portable/5.1/config/userpref.blend", b"preferences")
+            zf.writestr("manifest.json", json.dumps({"type": "portable"}))
+        dest = self.root / "restore_dest"
+        count = core.extract_portable_backup(backup, dest)
+        self.assertEqual(count, 1)
+        self.assertEqual(
+            (dest / "portable" / "5.1" / "config" / "userpref.blend").read_bytes(),
+            b"preferences",
+        )
+        self.assertFalse((dest / "manifest.json").exists())
+        manifest = core.read_portable_backup_manifest(backup)
+        self.assertEqual(manifest.get("type"), "portable")
+
+    def test_multi_target_continues_after_single_failure(self):
+        profile = core.create_profile(self.snapshot(), self.output)
+        good_root = self.root / "target" / "5.3"
+        good_root.mkdir(parents=True)
+        good_probe = {
+            "version": [5, 3, 0],
+            "user_root": str(good_root),
+            "config_dir": str(good_root / "config"),
+            "scripts_dir": str(good_root / "scripts"),
+            "datafiles_dir": str(good_root / "datafiles"),
+            "extensions_dir": str(good_root / "extensions"),
+        }
+
+        def fake_probe(exe, timeout=60):
+            if "Good" in str(exe):
+                return good_probe
+            raise core.MigrationError("目标 Blender 不存在")
+
+        def fake_audit(*args, **kwargs):
+            report_path = args[4]
+            report = {"status": "success", "disabled_addons": [], "warnings": []}
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            return report
+
+        with mock.patch.object(core, "run_target_probe", side_effect=fake_probe), \
+             mock.patch.object(core, "run_target_audit", side_effect=fake_audit), \
+             mock.patch.object(core, "windows_executable_is_running", return_value=False):
+            used_profile, outcomes = core.execute_existing_profile_migration_multi(
+                profile.path,
+                [self.root / "Good 5.3" / "blender.exe",
+                 self.root / "Bad 5.3" / "blender.exe"],
+                self.root / "migration_output",
+                self.user_root,
+                self.root / "migration_worker.py",
+                current_pid=123,
+            )
+        self.assertEqual(len(outcomes), 2)
+        good = [o for o in outcomes if o.result is not None]
+        bad = [o for o in outcomes if o.error]
+        self.assertEqual(len(good), 1)
+        self.assertEqual(len(bad), 1)
+        self.assertIn("目标 Blender 不存在", bad[0].error)
+        # HTML 报告应已生成
+        self.assertTrue(good[0].result.report_html_path.is_file())
+        self.assertTrue(
+            (good_root / "config" / "userpref.blend").is_file()
+        )
+
+
+class PackScriptTest(unittest.TestCase):
+    """pack_script.py 的命名与 manifest 写入（B1）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location(
+            "mmy_pack_script",
+            ROOT / "mmy_pack_config" / "pack_script.py",
+        )
+        cls.pack = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = cls.pack
+        spec.loader.exec_module(cls.pack)
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        self.portable = self.root / "Blender 5.1" / "portable"
+        (self.portable / "5.1" / "config").mkdir(parents=True)
+        (self.portable / "5.1" / "config" / "userpref.blend").write_bytes(b"p")
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_default_filename_uses_new_prefix(self):
+        name = self.pack.normalize_output_path("", self.portable, "5.1.0")
+        self.assertIn("MMY_Backup_Portable_v5.1.0_", Path(name).name)
+
+    def test_pack_writes_manifest(self):
+        output = self.root / "out" / "MMY_Backup_Portable_v5.1.0_test.zip"
+        self.pack.pack_portable(self.portable, output, version="5.1.0")
+        with zipfile.ZipFile(output) as zf:
+            self.assertIn("manifest.json", zf.namelist())
+            manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+        self.assertEqual(manifest["type"], "portable")
+        self.assertEqual(manifest["blender_version"], "5.1.0")
+        self.assertEqual(manifest["file_count"], 1)
+        self.assertTrue(manifest.get("machine") is not None)
 
 
 if __name__ == "__main__":

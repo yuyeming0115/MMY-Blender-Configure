@@ -228,6 +228,12 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
         default="",
     )
 
+    last_migration_status: bpy.props.StringProperty(
+        name="上次迁移结果摘要",
+        description="最近一次迁移的时间与逐目标结果（配置管理面板顶部展示）",
+        default="",
+    )
+
     migration_include_presets: bpy.props.BoolProperty(
         name="默认包含用户预设",
         default=True,
