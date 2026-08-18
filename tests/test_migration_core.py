@@ -339,6 +339,12 @@ class MigrationCoreTest(unittest.TestCase):
         self.assertNotIn("PYTHONPATH", env)
         self.assertIn("PATH", env)
 
+    def test_probe_expression_is_valid_python(self):
+        """回归：v1.2.0 曾因 f-string {{ 与普通字符串 }} 混用导致表达式括号不平衡。"""
+        expression = core._build_probe_expression()
+        compile(expression, "<probe>", "exec")  # 语法错误会直接抛 SyntaxError
+        self.assertEqual(expression.count("{"), expression.count("}"))
+
     def test_custom_target_resource_override_is_rejected(self):
         probe = {
             "config_dir": "C:/Blender/5.2/config",

@@ -662,13 +662,16 @@ def validate_target_resource_layout(probe: dict[str, Any], target_root: Path) ->
             )
 
 
-def run_target_probe(target_executable: Path, timeout: int = 60) -> dict[str, Any]:
-    executable = _resolved(target_executable)
-    if not executable.is_file():
-        raise MigrationError(f"目标 Blender 不存在：{executable}")
-    expression = (
+def _build_probe_expression() -> str:
+    """构造目标 Blender 探针表达式。
+
+    注意：必须使用普通字符串拼接。之前把 f-string 的 `{{` 与
+    普通字符串的 `}}` 混用，导致表达式括号不平衡（v1.2.0 潜伏 bug，
+    真机首次跑探针才暴露）。本函数有单测保证可编译。
+    """
+    return (
         "import bpy,json;"
-        f"print('{PROBE_MARKER}'+json.dumps({{"
+        "print('" + PROBE_MARKER + "'+json.dumps({"
         "'version':list(bpy.app.version),"
         "'binary_path':bpy.app.binary_path,"
         "'user_root':bpy.utils.resource_path('USER'),"
@@ -676,8 +679,15 @@ def run_target_probe(target_executable: Path, timeout: int = 60) -> dict[str, An
         "'scripts_dir':bpy.utils.user_resource('SCRIPTS'),"
         "'datafiles_dir':bpy.utils.user_resource('DATAFILES'),"
         "'extensions_dir':bpy.utils.user_resource('EXTENSIONS')"
-        "}},ensure_ascii=True))"
+        "},ensure_ascii=True))"
     )
+
+
+def run_target_probe(target_executable: Path, timeout: int = 60) -> dict[str, Any]:
+    executable = _resolved(target_executable)
+    if not executable.is_file():
+        raise MigrationError(f"目标 Blender 不存在：{executable}")
+    expression = _build_probe_expression()
     command = [
         str(executable),
         "--background",
