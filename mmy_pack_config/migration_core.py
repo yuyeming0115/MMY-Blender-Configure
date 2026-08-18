@@ -604,25 +604,53 @@ def rollback_atomic_install(
 
 
 def parse_probe_output(output: str) -> dict[str, Any]:
+    """从目标 Blender 输出中解析探针结果。
+
+    从尾部扫描 marker 行；跳过 payload 不以 '{' 开头的行——目标启动失败时，
+    错误堆栈会把探针表达式原文（含 marker 字符串）回显到输出里，
+    不能把这种行当作探针结果。
+    """
+    found_marker = False
     for line in reversed(output.splitlines()):
-        if PROBE_MARKER in line:
-            payload = line.split(PROBE_MARKER, 1)[1].strip()
-            try:
-                result = json.loads(payload)
-            except json.JSONDecodeError as exc:
-                raise MigrationError(f"目标 Blender 探针输出无效：{exc}") from exc
-            required = {
-                "version",
-                "user_root",
-                "config_dir",
-                "scripts_dir",
-                "datafiles_dir",
-                "extensions_dir",
-            }
-            if not required.issubset(result):
-                raise MigrationError("目标 Blender 探针缺少必要路径")
-            return result
+        if PROBE_MARKER not in line:
+            continue
+        found_marker = True
+        payload = line.split(PROBE_MARKER, 1)[1].strip()
+        if not payload.startswith("{"):
+            continue
+        try:
+            result = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise MigrationError(f"目标 Blender 探针输出无效：{exc}") from exc
+        required = {
+            "version",
+            "user_root",
+            "config_dir",
+            "scripts_dir",
+            "datafiles_dir",
+            "extensions_dir",
+        }
+        if not required.issubset(result):
+            raise MigrationError("目标 Blender 探针缺少必要路径")
+        return result
+    if found_marker:
+        raise MigrationError(
+            "目标 Blender 探针表达式执行失败（输出中仅有错误回显），"
+            "请手动以 --background 启动目标 Blender 排查"
+        )
     raise MigrationError("目标 Blender 未返回探针结果")
+
+
+def _blender_subprocess_env() -> dict[str, str]:
+    """构造启动目标 Blender 的干净环境。
+
+    移除可能污染目标内嵌 Python 的变量（PYTHONHOME/PYTHONPATH 等），
+    避免宿主进程环境导致目标 Blender 标准库加载失败。
+    """
+    environment = os.environ.copy()
+    for variable in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONEXECUTABLE"):
+        environment.pop(variable, None)
+    return environment
 
 
 def validate_target_resource_layout(probe: dict[str, Any], target_root: Path) -> None:
@@ -654,6 +682,8 @@ def run_target_probe(target_executable: Path, timeout: int = 60) -> dict[str, An
         str(executable),
         "--background",
         "--factory-startup",
+        "--python-exit-code",
+        "7",
         "--python-expr",
         expression,
     ]
@@ -668,12 +698,16 @@ def run_target_probe(target_executable: Path, timeout: int = 60) -> dict[str, An
             timeout=timeout,
             creationflags=creationflags,
             check=False,
+            env=_blender_subprocess_env(),
         )
     except subprocess.TimeoutExpired as exc:
         raise MigrationError("目标 Blender 探针启动超时") from exc
     combined = f"{completed.stdout}\n{completed.stderr}"
     if completed.returncode != 0:
-        raise MigrationError(f"目标 Blender 探针失败，退出码 {completed.returncode}")
+        tail = "\n".join(combined.splitlines()[-3:])[:300]
+        raise MigrationError(
+            f"目标 Blender 探针失败，退出码 {completed.returncode}：{tail}"
+        )
     return parse_probe_output(combined)
 
 
@@ -752,7 +786,7 @@ def run_target_audit(
         str(report_path),
         str(expected_user_root),
     ]
-    environment = os.environ.copy()
+    environment = _blender_subprocess_env()
     environment["MMY_MIGRATION_AUDIT"] = "1"
     environment["MMY_MIGRATION_EXPECTED_ROOT"] = str(expected_user_root)
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0

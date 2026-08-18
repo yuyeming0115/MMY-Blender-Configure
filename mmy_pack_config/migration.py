@@ -757,8 +757,9 @@ class MMY_OT_MigrationConfirm(
         header = layout.box()
         header.label(text=f"配置来源：Blender {source_version}", icon='BLENDER')
         components = precheck.get("components") or []
+        optional = (" + " + ", ".join(components)) if components else ""
         header.label(
-            text="迁移组件：" + (", ".join(components) if components else "默认组件"),
+            text=f"迁移组件：偏好 / 快捷键 / 启动文件 / 插件与扩展（固定包含）{optional}",
             icon='PREFERENCES',
         )
         header.label(

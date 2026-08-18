@@ -308,6 +308,37 @@ class MigrationCoreTest(unittest.TestCase):
         output = "noise\n" + core.PROBE_MARKER + json.dumps(payload) + "\nmore noise"
         self.assertEqual(core.parse_probe_output(output), payload)
 
+    def test_probe_output_skips_traceback_echo_lines(self):
+        """目标启动失败时，错误回显中的 marker 行不能当作探针结果。"""
+        payload = {
+            "version": [5, 3, 0],
+            "user_root": "C:/Blender/5.3",
+            "config_dir": "C:/Blender/5.3/config",
+            "scripts_dir": "C:/Blender/5.3/scripts",
+            "datafiles_dir": "C:/Blender/5.3/datafiles",
+            "extensions_dir": "C:/Blender/5.3/extensions",
+        }
+        valid_line = core.PROBE_MARKER + json.dumps(payload)
+        echo_line = "  print('" + core.PROBE_MARKER + "'+json.dumps({...}))"
+        output = valid_line + "\nTraceback ...\n" + echo_line + "\nSyntaxError"
+        self.assertEqual(core.parse_probe_output(output), payload)
+
+    def test_probe_output_only_echo_lines_gives_clear_error(self):
+        echo_line = "  print('" + core.PROBE_MARKER + "'+json.dumps({...}))"
+        with self.assertRaises(core.MigrationError) as caught:
+            core.parse_probe_output("Traceback\n" + echo_line)
+        self.assertIn("执行失败", str(caught.exception))
+
+    def test_blender_subprocess_env_strips_python_vars(self):
+        with mock.patch.dict(
+            core.os.environ,
+            {"PYTHONHOME": "C:/bad", "PYTHONPATH": "D:/bad", "PATH": core.os.environ.get("PATH", "")},
+        ):
+            env = core._blender_subprocess_env()
+        self.assertNotIn("PYTHONHOME", env)
+        self.assertNotIn("PYTHONPATH", env)
+        self.assertIn("PATH", env)
+
     def test_custom_target_resource_override_is_rejected(self):
         probe = {
             "config_dir": "C:/Blender/5.2/config",
