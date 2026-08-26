@@ -63,6 +63,7 @@ class SourceSnapshot:
     include_presets: bool = True
     include_datafiles: bool = False
     include_startup_scripts: bool = False
+    include_app_templates: bool = False
     include_history: bool = False
 
 
@@ -273,13 +274,18 @@ def should_skip_snapshot_file(relative_path: Path) -> bool:
     )
 
 
-def _iter_regular_files(source: Path) -> Iterable[tuple[Path, Path]]:
+def _iter_regular_files(
+    source: Path,
+    exclude_top_dirs: frozenset[str] = frozenset(),
+) -> Iterable[tuple[Path, Path]]:
     if not source.exists():
         return
     for item in sorted(source.rglob("*"), key=lambda value: str(value).casefold()):
         if item.is_symlink() or not item.is_file():
             continue
         relative = item.relative_to(source)
+        if exclude_top_dirs and relative.parts[0] in exclude_top_dirs:
+            continue
         if not should_skip_snapshot_file(relative):
             yield item, relative
 
@@ -302,24 +308,49 @@ def _json_dump(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True)
 
 
-def _profile_sources(snapshot: SourceSnapshot) -> list[tuple[Path, str, str]]:
-    sources: list[tuple[Path, str, str]] = [
-        (snapshot.config_dir / "userpref.blend", "payload/config/userpref.blend", "preferences"),
-        (snapshot.config_dir / "startup.blend", "payload/config/startup.blend", "startup_file"),
-        (snapshot.scripts_dir / "addons", "payload/scripts/addons", "addons"),
-        (snapshot.extensions_dir, "payload/extensions", "extensions"),
+_APP_TEMPLATES_DIR_NAME = "bl_app_templates_user"
+
+
+def _profile_sources(snapshot: SourceSnapshot) -> list[tuple[Path, str, str, frozenset[str]]]:
+    """返回 (来源路径, 归档基路径, 组件名, 顶层排除子目录) 列表。
+
+    归档路径刻意保持 ``payload/scripts/startup/bl_app_templates_user``，
+    与 Blender 标准用户模板位置一致，恢复侧按路径落位即可，无需特判。
+    """
+    sources: list[tuple[Path, str, str, frozenset[str]]] = [
+        (snapshot.config_dir / "userpref.blend", "payload/config/userpref.blend", "preferences", frozenset()),
+        (snapshot.config_dir / "startup.blend", "payload/config/startup.blend", "startup_file", frozenset()),
+        (snapshot.scripts_dir / "addons", "payload/scripts/addons", "addons", frozenset()),
+        (snapshot.extensions_dir, "payload/extensions", "extensions", frozenset()),
     ]
     if snapshot.include_presets:
-        sources.append((snapshot.scripts_dir / "presets", "payload/scripts/presets", "presets"))
+        sources.append((snapshot.scripts_dir / "presets", "payload/scripts/presets", "presets", frozenset()))
     if snapshot.include_datafiles:
-        sources.append((snapshot.datafiles_dir, "payload/datafiles", "datafiles"))
+        sources.append((snapshot.datafiles_dir, "payload/datafiles", "datafiles", frozenset()))
     if snapshot.include_startup_scripts:
-        sources.append((snapshot.scripts_dir / "startup", "payload/scripts/startup", "startup_scripts"))
+        # 应用模板从启动脚本组件中排除，避免与独立组件重复打包触发路径重复校验
+        sources.append(
+            (
+                snapshot.scripts_dir / "startup",
+                "payload/scripts/startup",
+                "startup_scripts",
+                frozenset({_APP_TEMPLATES_DIR_NAME}),
+            )
+        )
+    if snapshot.include_app_templates:
+        sources.append(
+            (
+                snapshot.scripts_dir / "startup" / _APP_TEMPLATES_DIR_NAME,
+                f"payload/scripts/startup/{_APP_TEMPLATES_DIR_NAME}",
+                "app_templates",
+                frozenset(),
+            )
+        )
     if snapshot.include_history:
         sources.extend(
             [
-                (snapshot.config_dir / "bookmarks.txt", "payload/config/bookmarks.txt", "history"),
-                (snapshot.config_dir / "recent-files.txt", "payload/config/recent-files.txt", "history"),
+                (snapshot.config_dir / "bookmarks.txt", "payload/config/bookmarks.txt", "history", frozenset()),
+                (snapshot.config_dir / "recent-files.txt", "payload/config/recent-files.txt", "history", frozenset()),
             ]
         )
     return sources
@@ -383,7 +414,7 @@ def create_profile(snapshot: SourceSnapshot, output_dir: Path) -> ProfileResult:
 
     try:
         with zipfile.ZipFile(profile_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
-            for source, archive_base, component in _profile_sources(snapshot):
+            for source, archive_base, component, exclude_top_dirs in _profile_sources(snapshot):
                 if source.is_symlink():
                     warnings.append(f"已跳过符号链接：{source}")
                     continue
@@ -392,7 +423,7 @@ def create_profile(snapshot: SourceSnapshot, output_dir: Path) -> ProfileResult:
                     continue
                 if source.is_dir():
                     found = False
-                    for item, relative in _iter_regular_files(source):
+                    for item, relative in _iter_regular_files(source, exclude_top_dirs):
                         found = True
                         add_file(
                             zf,

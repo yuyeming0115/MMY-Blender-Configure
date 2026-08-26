@@ -106,7 +106,8 @@ payload/config/userpref.blend
 payload/config/startup.blend
 payload/scripts/addons/
 payload/scripts/presets/
-payload/scripts/startup/              # 高级选项，默认关闭
+payload/scripts/startup/              # 高级选项（启动脚本），默认关闭；不含 bl_app_templates_user
+payload/scripts/startup/bl_app_templates_user/   # 应用模板，独立高级选项，默认关闭
 payload/datafiles/                    # 高级选项，默认关闭
 payload/extensions/
 payload/config/bookmarks.txt          # 高级选项，默认关闭

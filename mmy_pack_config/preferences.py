@@ -249,6 +249,11 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
         default=False,
     )
 
+    migration_include_app_templates: bpy.props.BoolProperty(
+        name="默认包含应用模板",
+        default=False,
+    )
+
     migration_include_history: bpy.props.BoolProperty(
         name="默认包含书签与最近文件",
         default=False,
@@ -316,6 +321,7 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
         grid.prop(self, "migration_include_presets")
         grid.prop(self, "migration_include_datafiles")
         grid.prop(self, "migration_include_startup_scripts")
+        grid.prop(self, "migration_include_app_templates")
         grid.prop(self, "migration_include_history")
         if self.last_migration_report:
             migration_box.label(

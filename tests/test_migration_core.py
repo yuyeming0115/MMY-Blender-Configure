@@ -128,6 +128,76 @@ class MigrationCoreTest(unittest.TestCase):
         self.assertEqual(result.manifest["schema_version"], 2)
         self.assertEqual(result.manifest["source"]["blender_version"], [5, 1, 0])
 
+    def _create_app_template_files(self):
+        template = self.scripts / "startup" / "bl_app_templates_user" / "MyTemplate"
+        template.mkdir(parents=True)
+        (template / "__init__.py").write_text("# template", encoding="utf-8")
+        (template / "startup.blend").write_bytes(b"template-startup")
+        (self.scripts / "startup" / "custom_module.py").write_text("x = 1", encoding="utf-8")
+        return template
+
+    def test_app_templates_packed_as_independent_component(self):
+        self._create_app_template_files()
+
+        result = core.create_profile(
+            self.snapshot(include_app_templates=True), self.output
+        )
+        with zipfile.ZipFile(result.path) as archive:
+            names = set(archive.namelist())
+            self.assertIn(
+                "payload/scripts/startup/bl_app_templates_user/MyTemplate/__init__.py",
+                names,
+            )
+            # 模板内 startup.blend（.blend 后缀）不被快照排除规则误杀
+            self.assertIn(
+                "payload/scripts/startup/bl_app_templates_user/MyTemplate/startup.blend",
+                names,
+            )
+            # 未勾选启动脚本时，startup 下其余脚本不进入快照
+            self.assertNotIn("payload/scripts/startup/custom_module.py", names)
+        self.assertIn("app_templates", result.manifest["components"])
+        self.assertNotIn("startup_scripts", result.manifest["components"])
+
+        # 恢复侧按归档路径落位，与 Blender 标准模板目录一致
+        staging = self.root / "stage"
+        fallback = self.root / "fallback"
+        core.extract_profile(result.path, staging, fallback)
+        self.assertTrue(
+            (
+                staging
+                / "scripts"
+                / "startup"
+                / "bl_app_templates_user"
+                / "MyTemplate"
+                / "startup.blend"
+            ).is_file()
+        )
+
+    def test_app_templates_and_startup_scripts_no_duplicate_paths(self):
+        self._create_app_template_files()
+
+        # 两开关同时开启：模板仅通过独立组件进入。若 startup_scripts 组件
+        # 未排除该子目录，add_file 的路径查重会先抛「配置快照内路径重复」
+        result = core.create_profile(
+            self.snapshot(include_startup_scripts=True, include_app_templates=True),
+            self.output,
+        )
+        with zipfile.ZipFile(result.path) as archive:
+            names = archive.namelist()
+            template_entries = [
+                name for name in names if "bl_app_templates_user" in name
+            ]
+            self.assertEqual(
+                sorted(template_entries),
+                [
+                    "payload/scripts/startup/bl_app_templates_user/MyTemplate/__init__.py",
+                    "payload/scripts/startup/bl_app_templates_user/MyTemplate/startup.blend",
+                ],
+            )
+            self.assertIn("payload/scripts/startup/custom_module.py", names)
+        self.assertIn("startup_scripts", result.manifest["components"])
+        self.assertIn("app_templates", result.manifest["components"])
+
     def test_profile_round_trip_validates_hashes(self):
         result = core.create_profile(self.snapshot(include_datafiles=True), self.output)
         staging = self.root / "stage"
