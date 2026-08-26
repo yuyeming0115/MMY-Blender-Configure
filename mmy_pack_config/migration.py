@@ -243,6 +243,7 @@ def _prepare_source_snapshot(
     include_presets: bool,
     include_datafiles: bool,
     include_startup_scripts: bool,
+    include_app_templates: bool,
     include_history: bool,
 ) -> tuple[SourceSnapshot, Path]:
     save_result = bpy.ops.wm.save_userpref()
@@ -283,6 +284,7 @@ def _prepare_source_snapshot(
             include_presets=include_presets,
             include_datafiles=include_datafiles,
             include_startup_scripts=include_startup_scripts,
+            include_app_templates=include_app_templates,
             include_history=include_history,
         )
         return snapshot, work_dir
@@ -405,6 +407,7 @@ class _SnapshotOptionsMixin:
             self.include_presets = preferences.migration_include_presets
             self.include_datafiles = preferences.migration_include_datafiles
             self.include_startup_scripts = preferences.migration_include_startup_scripts
+            self.include_app_templates = preferences.migration_include_app_templates
             self.include_history = preferences.migration_include_history
         self.confirm_startup_risk = False
 
@@ -419,6 +422,7 @@ class _SnapshotOptionsMixin:
 
         caution_box = layout.box()
         caution_box.label(text="🟡 谨慎（按需勾选）", icon='SORTTIME')
+        caution_box.prop(self, "include_app_templates")
         caution_box.prop(self, "include_datafiles")
         caution_box.prop(self, "include_history")
 
@@ -444,6 +448,7 @@ class _SnapshotOptionsMixin:
             self.include_presets,
             self.include_datafiles,
             self.include_startup_scripts,
+            self.include_app_templates,
             self.include_history,
         )
 
@@ -454,6 +459,7 @@ class _SnapshotOptionsMixin:
         preferences.migration_include_presets = self.include_presets
         preferences.migration_include_datafiles = self.include_datafiles
         preferences.migration_include_startup_scripts = self.include_startup_scripts
+        preferences.migration_include_app_templates = self.include_app_templates
         preferences.migration_include_history = self.include_history
 
 
@@ -490,6 +496,10 @@ class MMY_OT_MigrateToBlender(
     )
     include_startup_scripts: bpy.props.BoolProperty(
         name="启动脚本（自动执行代码）",
+        default=False,
+    )
+    include_app_templates: bpy.props.BoolProperty(
+        name="应用模板（bl_app_templates_user，含 .blend 布局文件）",
         default=False,
     )
     include_history: bpy.props.BoolProperty(
@@ -746,6 +756,8 @@ def _run_precheck(
             components.append("datafiles")
         if snapshot.include_startup_scripts:
             components.append("startup_scripts")
+        if snapshot.include_app_templates:
+            components.append("app_templates")
         if snapshot.include_history:
             components.append("history")
 
@@ -1001,6 +1013,10 @@ class MMY_OT_ExportMigrationProfile(
     )
     include_startup_scripts: bpy.props.BoolProperty(
         name="启动脚本（自动执行代码）",
+        default=False,
+    )
+    include_app_templates: bpy.props.BoolProperty(
+        name="应用模板（bl_app_templates_user，含 .blend 布局文件）",
         default=False,
     )
     include_history: bpy.props.BoolProperty(
