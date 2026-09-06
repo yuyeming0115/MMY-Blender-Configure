@@ -480,6 +480,27 @@ def create_profile(snapshot: SourceSnapshot, output_dir: Path) -> ProfileResult:
     return ProfileResult(path=profile_path, manifest=manifest, warnings=warnings)
 
 
+def detect_config_file(path: Path) -> str:
+    """识别配置文件类型，返回 profile / portable / recovery / unknown。
+
+    两类 zip 均在根目录带 manifest.json：Portable 备份的 manifest 含
+    type="portable"（pack_script 写入），跨版本配置包没有该字段。
+    """
+    path = Path(path)
+    if path.suffix.lower() == ".json":
+        return "recovery" if path.name == "recovery.json" else "unknown"
+    if path.suffix.lower() != ".zip":
+        return "unknown"
+    try:
+        with zipfile.ZipFile(path) as zf:
+            if "manifest.json" not in set(zf.namelist()):
+                return "unknown"
+            manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+    except Exception:
+        return "unknown"
+    return "portable" if manifest.get("type") == "portable" else "profile"
+
+
 def read_profile_manifest(profile_path: Path) -> dict[str, Any]:
     try:
         with zipfile.ZipFile(profile_path, "r") as zf:

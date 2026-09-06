@@ -675,5 +675,52 @@ class PackScriptTest(unittest.TestCase):
         self.assertTrue(manifest.get("machine") is not None)
 
 
+class DetectConfigFileTest(unittest.TestCase):
+    """detect_config_file：统一导入的类型自动识别（v1.4.0）。"""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _write_zip(self, name, entries):
+        path = self.root / name
+        with zipfile.ZipFile(path, "w") as zf:
+            for arcname, data in entries.items():
+                zf.writestr(arcname, data)
+        return path
+
+    def test_detects_profile_by_manifest_without_type(self):
+        path = self._write_zip(
+            "MMY_Backup_Profile_v5.1.0_20260906.zip",
+            {"manifest.json": json.dumps({"schema_version": 2, "source": {}})},
+        )
+        self.assertEqual(core.detect_config_file(path), "profile")
+
+    def test_detects_portable_by_manifest_type(self):
+        path = self._write_zip(
+            "MMY_Backup_Portable_v5.1.0_20260906.zip",
+            {"manifest.json": json.dumps({"type": "portable"}), "portable/5.1/config/x": "d"},
+        )
+        self.assertEqual(core.detect_config_file(path), "portable")
+
+    def test_detects_recovery_json(self):
+        path = self.root / "recovery.json"
+        path.write_text("{}", encoding="utf-8")
+        self.assertEqual(core.detect_config_file(path), "recovery")
+
+    def test_unknown_for_other_json_and_broken_zip(self):
+        other = self.root / "other.json"
+        other.write_text("{}", encoding="utf-8")
+        self.assertEqual(core.detect_config_file(other), "unknown")
+        broken = self.root / "broken.zip"
+        broken.write_bytes(b"not a zip")
+        self.assertEqual(core.detect_config_file(broken), "unknown")
+        no_manifest = self._write_zip("nomani.zip", {"a.txt": "x"})
+        self.assertEqual(core.detect_config_file(no_manifest), "unknown")
+
+
 if __name__ == "__main__":
     unittest.main()

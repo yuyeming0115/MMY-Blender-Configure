@@ -329,6 +329,21 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
                 icon='TEXT',
             )
 
+        # ========== 维护与高级（极简双按钮后收纳的二级功能）==========
+        maint_box = layout.box()
+        maint_box.label(text="维护与高级", icon='SETTINGS')
+        row = maint_box.row(align=True)
+        report_row = row.row(align=True)
+        report_row.enabled = bool(self.last_migration_report)
+        report_row.operator("mmy.open_migration_report", text="迁移报告", icon='TEXT')
+        row.operator("mmy.backup_history", text="备份记录", icon='RECOVER_LAST')
+        row.operator("mmy.cleanup_migration_artifacts", text="清理残留", icon='TRASH')
+        maint_box.operator(
+            "mmy.pack_portable",
+            text="全量 Portable 打包（整机搬迁/降级用）",
+            icon='PACKAGE',
+        )
+
         # ========== 区块2：插件加载耗时（双列彩虹色）==========
         self._draw_timer_panel(layout)
 

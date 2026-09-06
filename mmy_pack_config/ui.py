@@ -195,127 +195,28 @@ class MMY_OT_PackPortable(bpy.types.Operator):
 
 
 # ============================================================
-# 配置管理总入口
+# 顶部菜单栏按钮（极简双按钮：v1.4.0）
 # ============================================================
 
-class MMY_OT_OpenConfigManager(bpy.types.Operator):
-    bl_idname = "mmy.open_config_manager"
-    bl_label = "MMY 配置管理"
-    bl_description = "备份、跨版本迁移与恢复"
-    bl_options = {"INTERNAL"}
-
-    def invoke(self, context, event):
-        # confirm_text 明确为「关闭」：本面板只作为入口，点关闭不触发任何操作，
-        # 避免旧版「确定」按钮造成的"点了却没反应"误导。
-        return context.window_manager.invoke_props_dialog(
-            self, width=480, confirm_text="关闭"
-        )
-
-    def execute(self, context):
-        return {"FINISHED"}
-
-    def draw(self, context):
-        from . import utils
-
-        layout = self.layout
-        addon = context.preferences.addons.get(__package__)
-        prefs = addon.preferences if addon else None
-
-        # ---------- 状态区 ----------
-        status_box = layout.box()
-        version = ".".join(str(v) for v in bpy.app.version[:3])
-        mode = "Portable" if utils.is_portable_mode() else "普通安装"
-        row = status_box.row()
-        row.label(text=f"当前 Blender {version}（{mode}）", icon='BLENDER')
-        out_dir = getattr(prefs, "pack_output_path", "") if prefs else ""
-        if not out_dir:
-            out_dir = str(Path.home() / "Desktop")
-        status_box.label(text=f"备份目录：{out_dir}", icon='FILE_FOLDER')
-        last_status = getattr(prefs, "last_migration_status", "") if prefs else ""
-        if last_status:
-            icon = 'CHECKMARK' if "成功" in last_status else (
-                'ERROR' if ("失败" in last_status or "回滚" in last_status) else 'INFO'
-            )
-            status_box.label(text=f"上次迁移：{last_status}", icon=icon)
-
-        # ---------- 备份 ----------
-        backup_box = layout.box()
-        backup_box.label(text="备份", icon='PACKAGE')
-        backup_box.operator(
-            "mmy.pack_portable",
-            text="立即备份（全量 Portable）",
-            icon='PACKAGE',
-        )
-        backup_box.operator(
-            "mmy.backup_history",
-            text="备份记录（恢复入口）",
-            icon='RECOVER_LAST',
-        )
-        backup_box.label(text="回到旧版本 = 恢复该版本的备份", icon='INFO')
-
-        # ---------- 迁移 ----------
-        migration_box = layout.box()
-        migration_box.label(text="迁移（仅同主版本、仅升级）", icon='FILE_REFRESH')
-        row = migration_box.row(align=True)
-        row.operator(
-            "mmy.migrate_to_blender",
-            text="迁移到新版",
-            icon='FILE_REFRESH',
-        )
-        row.operator(
-            "mmy.export_migration_profile",
-            text="导出配置包",
-            icon='EXPORT',
-        )
-
-        # ---------- 维护 ----------
-        maintenance_box = layout.box()
-        maintenance_box.label(text="维护", icon='SETTINGS')
-        row = maintenance_box.row(align=True)
-        report_row = row.row(align=True)
-        has_report = bool(
-            prefs and getattr(prefs, "last_migration_report", "")
-        )
-        report_row.enabled = has_report
-        report_row.operator(
-            "mmy.open_migration_report",
-            text="打开报告",
-            icon='TEXT',
-        )
-        row.operator(
-            "mmy.cleanup_migration_artifacts",
-            text="清理迁移残留",
-            icon='TRASH',
-        )
-
-
-# ============================================================
-# 注册到顶部菜单栏
-# ============================================================
-
-def draw_pack_button(self, context):
+def draw_topbar_buttons(self, context):
     layout = self.layout
     row = layout.row(align=True)
     row.scale_x = 0.85
-    row.operator("mmy.open_config_manager", text="配置管理", icon="PREFERENCES")
+    row.operator("mmy.export_config", text="导出配置", icon="EXPORT")
+    row.operator("mmy.import_config", text="导入配置", icon="IMPORT")
 
 
 def register():
     bpy.utils.register_class(MMY_OT_PackPortable)
-    bpy.utils.register_class(MMY_OT_OpenConfigManager)
     try:
-        bpy.types.TOPBAR_MT_editor_menus.append(draw_pack_button)
+        bpy.types.TOPBAR_MT_editor_menus.append(draw_topbar_buttons)
     except Exception as e:
         print(f"[MMY] 无法注册顶部菜单按钮: {e}")
 
 
 def unregister():
     try:
-        bpy.types.TOPBAR_MT_editor_menus.remove(draw_pack_button)
-    except Exception:
-        pass
-    try:
-        bpy.utils.unregister_class(MMY_OT_OpenConfigManager)
+        bpy.types.TOPBAR_MT_editor_menus.remove(draw_topbar_buttons)
     except Exception:
         pass
     try:
