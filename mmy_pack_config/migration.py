@@ -7,6 +7,14 @@ v1.3.0 变更：
   - 支持多目标批量迁移（M5）
   - 新增备份记录面板，恢复入口改为列表选择（B2/B3）
   - 异步任务状态栏显示已用时长
+
+v1.4.0 变更（极简双按钮重构）：
+  - 新增 mmy.export_config 一键导出（无弹窗，默认值直出）
+  - 新增 mmy.import_config 统一导入（来源选择：当前 Blender 直迁 / 配置文件
+    自动识别分发到跨版本迁移、解压恢复、迁移回滚）
+  - 原导出弹窗 operator（mmy.export_migration_profile）由一键导出取代
+  - 安全修复：迁移确认页加会话令牌（防二次预检覆盖待执行数据）、
+    解压恢复拒绝活配置目录并在覆盖前自动备份原文件
 """
 
 import json
@@ -18,6 +26,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -31,6 +40,7 @@ from .migration_core import (
     SourceSnapshot,
     cleanup_stale_migration_artifacts,
     create_profile,
+    detect_config_file,
     directory_size,
     ensure_external_output,
     execute_existing_profile_migration_multi,
@@ -452,16 +462,6 @@ class _SnapshotOptionsMixin:
             self.include_history,
         )
 
-    def _save_options(self, preferences):
-        if not preferences:
-            return
-        preferences.pack_output_path = self.output_dir
-        preferences.migration_include_presets = self.include_presets
-        preferences.migration_include_datafiles = self.include_datafiles
-        preferences.migration_include_startup_scripts = self.include_startup_scripts
-        preferences.migration_include_app_templates = self.include_app_templates
-        preferences.migration_include_history = self.include_history
-
 
 class MMY_TargetCandidate(bpy.types.PropertyGroup):
     """多目标批量迁移的候选目标（M5）。"""
@@ -540,9 +540,11 @@ class MMY_OT_MigrateToBlender(
         preferences = _get_preferences(context)
         self._load_option_defaults(preferences)
         remembered = getattr(preferences, "last_target_blender", "") if preferences else ""
-        self.source_profile = (
-            getattr(preferences, "last_migration_profile", "") if preferences else ""
-        )
+        # 由 mmy.import_config 预填的配置包路径优先，不用记忆值覆盖
+        if not self.source_profile:
+            self.source_profile = (
+                getattr(preferences, "last_migration_profile", "") if preferences else ""
+            )
         current = Path(getattr(bpy.app, "binary_path", "") or sys.executable)
         self.target_executable = suggest_blender_executable(current, remembered)
 
@@ -599,6 +601,10 @@ class MMY_OT_MigrateToBlender(
 
     def draw(self, context):
         layout = self.layout
+        if sys.platform != "win32":
+            warn = layout.column()
+            warn.alert = True
+            warn.label(text="跨版本迁移第一版仅支持 Windows", icon='ERROR')
         layout.prop(self, "source_mode", expand=True)
         if self.source_mode == "PROFILE":
             layout.prop(self, "source_profile")
@@ -657,6 +663,8 @@ class MMY_OT_MigrateToBlender(
             return {"CANCELLED"}
 
         _discard_pending_migration()
+        # 会话令牌：预检与确认页一一对应，防止确认页开着时二次预检覆盖数据
+        self._pending_token = uuid.uuid4().hex
         output_dir = Path(self.output_dir)
         audit_timeout = int(self.audit_timeout)
 
@@ -698,6 +706,7 @@ class MMY_OT_MigrateToBlender(
         _PENDING_MIGRATION.clear()
         _PENDING_MIGRATION.update(
             {
+                "token": getattr(self, "_pending_token", ""),
                 "snapshot": self._pending_snapshot,
                 "work_dir": self._pending_work_dir,
                 "targets": self._pending_targets,
@@ -818,6 +827,7 @@ class MMY_OT_MigrationConfirm(
         if not _PENDING_MIGRATION:
             self.report({"ERROR"}, "没有待确认的迁移任务")
             return {"CANCELLED"}
+        self._confirmed_token = _PENDING_MIGRATION.get("token", "")
         return context.window_manager.invoke_props_dialog(
             self, width=640, confirm_text="确认迁移"
         )
@@ -878,6 +888,10 @@ class MMY_OT_MigrationConfirm(
         if not pending:
             self.report({"ERROR"}, "没有待确认的迁移任务")
             return {"CANCELLED"}
+        if pending.get("token") != getattr(self, "_confirmed_token", None):
+            # 确认页打开期间发起了新的预检，pending 已被替换
+            self.report({"ERROR"}, "预检结果已过期（被新的预检取代），请重新发起迁移")
+            return {"CANCELLED"}
         precheck = pending.get("precheck", {})
         ok_targets = [
             entry["target"] for entry in precheck.get("targets", []) if entry.get("ok")
@@ -926,7 +940,9 @@ class MMY_OT_MigrationConfirm(
         return self._start_job(context, job, "正在迁移配置（自动备份目标，失败自动回滚）...")
 
     def cancel(self, context):
-        _discard_pending_migration()
+        # 仅当 pending 仍属于本会话时才清理，避免误清新一次预检的数据
+        if _PENDING_MIGRATION.get("token") == getattr(self, "_confirmed_token", None):
+            _discard_pending_migration()
 
     def _handle_success(self, context, result):
         profile, outcomes = result
@@ -995,78 +1011,161 @@ class MMY_OT_MigrationConfirm(
         _discard_pending_migration()
 
 
-class MMY_OT_ExportMigrationProfile(
-    _AsyncOperatorMixin,
-    _SnapshotOptionsMixin,
-    bpy.types.Operator,
-):
-    bl_idname = "mmy.export_migration_profile"
-    bl_label = "导出跨版本配置包"
-    bl_description = "生成可重复迁移到更高同主版本 Blender 的配置快照"
+class MMY_OT_ExportConfig(_AsyncOperatorMixin, bpy.types.Operator):
+    """极简版一键导出：无弹窗，全部使用偏好设置中的默认值。"""
+
+    bl_idname = "mmy.export_config"
+    bl_label = "导出配置"
+    bl_description = (
+        "一键导出当前配置（偏好/快捷键/启动文件/插件与扩展），"
+        "保存到记忆目录；组件与输出目录在偏好设置中配置"
+    )
     bl_options = {"REGISTER"}
 
-    output_dir: bpy.props.StringProperty(name="输出目录", subtype="DIR_PATH")
-    include_presets: bpy.props.BoolProperty(name="用户预设", default=True)
-    include_datafiles: bpy.props.BoolProperty(
-        name="数据文件与 Studio Lights（体积大）",
-        default=False,
-    )
-    include_startup_scripts: bpy.props.BoolProperty(
-        name="启动脚本（自动执行代码）",
-        default=False,
-    )
-    include_app_templates: bpy.props.BoolProperty(
-        name="应用模板（bl_app_templates_user，含 .blend 布局文件）",
-        default=False,
-    )
-    include_history: bpy.props.BoolProperty(
-        name="书签与最近文件（含本机路径）",
-        default=False,
-    )
-    confirm_startup_risk: bpy.props.BoolProperty(
-        name="我已了解风险，仍要包含启动脚本",
-        default=False,
-    )
-
-    def invoke(self, context, event):
-        self._load_option_defaults(_get_preferences(context))
-        return context.window_manager.invoke_props_dialog(self, width=540)
-
-    def draw(self, context):
-        self._draw_options(self.layout)
-
     def execute(self, context):
-        option_error = self._validate_options()
-        if option_error:
-            self.report({"ERROR"}, option_error)
-            return {"CANCELLED"}
+        preferences = _get_preferences(context)
+        # 启动脚本有执行风险，只有用户在偏好设置中显式开启时才包含
+        include_startup_scripts = bool(
+            preferences and preferences.migration_include_startup_scripts
+        )
+        output_dir = _default_output_dir(preferences)
+
         if not self._reserve_job():
             self.report({"WARNING"}, "已有配置任务正在执行")
             return {"CANCELLED"}
         try:
-            snapshot, work_dir = self._snapshot(context)
+            snapshot, work_dir = _prepare_source_snapshot(
+                context,
+                output_dir,
+                include_presets=preferences.migration_include_presets if preferences else True,
+                include_datafiles=preferences.migration_include_datafiles if preferences else False,
+                include_startup_scripts=include_startup_scripts,
+                include_app_templates=preferences.migration_include_app_templates if preferences else False,
+                include_history=preferences.migration_include_history if preferences else False,
+            )
         except Exception as exc:
             self._release_job()
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
-        output_dir = Path(self.output_dir)
-
         def job():
             try:
-                return create_profile(snapshot, output_dir)
+                return create_profile(snapshot, Path(output_dir))
             finally:
                 shutil.rmtree(work_dir, ignore_errors=True)
 
-        return self._start_job(context, job, "正在导出跨版本配置包...")
+        return self._start_job(context, job, "正在导出配置...")
+
 
     def _handle_success(self, context, result):
         preferences = _get_preferences(context)
-        self._save_options(preferences)
         if preferences:
             preferences.last_migration_profile = str(result.path)
         bpy.ops.wm.save_userpref()
-        self.report({"INFO"}, f"配置包已导出：{result.path.name}")
+        self.report({"INFO"}, f"配置已导出：{result.path}")
+
+
+class MMY_OT_ImportConfig(bpy.types.Operator):
+    """极简版统一导入：先选来源，选文件后自动识别类型并分发到对应流程。"""
+
+    bl_idname = "mmy.import_config"
+    bl_label = "导入配置"
+    bl_description = (
+        "迁移或恢复配置：直接迁移当前配置到新版（同机升级），"
+        "或从配置文件（跨版本配置包 / 全量备份 / 迁移回滚点）导入"
+    )
+    bl_options = {"REGISTER"}
+
+    source: bpy.props.EnumProperty(
+        name="来源",
+        items=(
+            ("PROFILE_FILE", "从配置文件导入", ""),
+            ("CURRENT", "直接迁移当前配置到新版", ""),
+        ),
+        default="PROFILE_FILE",
+    )
+    filepath: bpy.props.StringProperty(name="配置文件", subtype="FILE_PATH")
+    filter_glob: bpy.props.StringProperty(default="*.zip;*.json", options={"HIDDEN"})
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=480, confirm_text="继续")
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "source", expand=True)
+        if self.source == "CURRENT":
+            if sys.platform != "win32":
+                warn = layout.column()
+                warn.alert = True
+                warn.label(text="跨版本迁移暂仅支持 Windows", icon='ERROR')
+            else:
+                layout.label(text="自动检测本机其他 Blender，预检确认后才会执行", icon='INFO')
+        else:
+            layout.label(
+                text="选择文件后自动识别：跨版本配置包 / 全量备份 / 迁移回滚点",
+                icon='INFO',
+            )
+
+    def execute(self, context):
+        if self.source == "CURRENT":
+            if sys.platform != "win32":
+                self.report(
+                    {"ERROR"},
+                    "跨版本迁移暂仅支持 Windows；可改用「从配置文件导入」恢复全量备份",
+                )
+                return {"CANCELLED"}
+            try:
+                bpy.ops.mmy.migrate_to_blender("INVOKE_DEFAULT", source_mode="CURRENT")
+            except RuntimeError as exc:
+                self.report({"ERROR"}, f"无法打开迁移向导：{exc}")
+                return {"CANCELLED"}
+            return {"FINISHED"}
+
+        # PROFILE_FILE：空路径先打开文件浏览器；浏览器确认后带路径二次进入
+        if self.filepath:
+            if not Path(self.filepath).is_file():
+                self.report({"ERROR"}, "请选择有效的配置文件（.zip 或 recovery.json）")
+                return {"CANCELLED"}
+            return self._import_file(context)
+
+        preferences = _get_preferences(context)
+        candidates = []
+        if preferences:
+            candidates.append(getattr(preferences, "last_migration_profile", ""))
+            candidates.append(getattr(preferences, "pack_output_path", ""))
+        default = next((c for c in candidates if c and Path(c).exists()), "")
+        if default:
+            # 文件选择器要求文件路径；给目录时补尾部分隔符使其作为默认目录打开
+            self.filepath = str(default) if Path(default).is_file() else str(Path(default)) + "/"
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def _import_file(self, context):
+        path = Path(self.filepath)
+        kind = detect_config_file(path)
+        try:
+            if kind == "profile":
+                if sys.platform != "win32":
+                    self.report(
+                        {"ERROR"},
+                        "跨版本迁移暂仅支持 Windows；macOS 上可导入全量备份进行恢复",
+                    )
+                    return {"CANCELLED"}
+                bpy.ops.mmy.migrate_to_blender("INVOKE_DEFAULT", source_mode="PROFILE", source_profile=str(path))
+            elif kind == "portable":
+                bpy.ops.mmy.restore_portable_backup("INVOKE_DEFAULT", filepath=str(path))
+            elif kind == "recovery":
+                bpy.ops.mmy.restore_migration_backup("INVOKE_DEFAULT", filepath=str(path))
+            else:
+                self.report(
+                    {"ERROR"},
+                    "无法识别的文件：请选择本插件导出的配置包/全量备份（.zip）或迁移回滚点（recovery.json）",
+                )
+                return {"CANCELLED"}
+        except RuntimeError as exc:
+            self.report({"ERROR"}, f"无法打开对应流程：{exc}")
+            return {"CANCELLED"}
+        return {"FINISHED"}
 
 
 class MMY_OT_RestoreMigrationBackup(_AsyncOperatorMixin, bpy.types.Operator):
@@ -1297,14 +1396,23 @@ class MMY_OT_RestorePortableBackup(_AsyncOperatorMixin, bpy.types.Operator):
         if not self._reserve_job():
             self.report({"WARNING"}, "已有配置任务正在执行")
             return {"CANCELLED"}
+        # 防线一：拒绝把旧备份解压到当前正在使用的配置目录
+        current_user_root = Path(bpy.utils.resource_path("USER"))
         return self._start_job(
             context,
-            lambda: extract_portable_backup(zip_path, target_dir),
+            lambda: extract_portable_backup(
+                zip_path, target_dir, protected_roots=[current_user_root]
+            ),
             "正在解压恢复备份...",
         )
 
-    def _handle_success(self, context, count):
-        self.report({"INFO"}, f"解压完成：{count} 个文件 → {self.target_dir}")
+    def _handle_success(self, context, result):
+        count, backup_zip_path = result
+        message = f"解压完成：{count} 个文件 → {self.target_dir}"
+        if backup_zip_path:
+            # 防线二：被同名覆盖的原文件已自动打包备份
+            message += f"（覆盖前原文件已备份：{Path(backup_zip_path).name}）"
+        self.report({"INFO"}, message)
 
 
 class MMY_OT_CleanupMigrationArtifacts(bpy.types.Operator):
@@ -1363,7 +1471,8 @@ classes = (
     MMY_TargetCandidate,
     MMY_OT_MigrateToBlender,
     MMY_OT_MigrationConfirm,
-    MMY_OT_ExportMigrationProfile,
+    MMY_OT_ExportConfig,
+    MMY_OT_ImportConfig,
     MMY_OT_RestoreMigrationBackup,
     MMY_OT_OpenMigrationReport,
     MMY_OT_BackupHistory,

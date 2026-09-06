@@ -114,6 +114,8 @@ class MigrationCoreTest(unittest.TestCase):
     def test_profile_contains_default_components_and_exclusions(self):
         result = core.create_profile(self.snapshot(), self.output)
         self.assertTrue(result.path.is_file())
+        # 原子写：成功后不应残留 .part 临时文件
+        self.assertEqual(list(self.output.glob("*.part")), [])
         with zipfile.ZipFile(result.path) as archive:
             names = set(archive.namelist())
             self.assertIn("payload/config/userpref.blend", names)
@@ -577,8 +579,9 @@ class MigrationCoreTest(unittest.TestCase):
             zf.writestr("portable/5.1/config/userpref.blend", b"preferences")
             zf.writestr("manifest.json", json.dumps({"type": "portable"}))
         dest = self.root / "restore_dest"
-        count = core.extract_portable_backup(backup, dest)
+        count, safety_backup = core.extract_portable_backup(backup, dest)
         self.assertEqual(count, 1)
+        self.assertEqual(safety_backup, "")
         self.assertEqual(
             (dest / "portable" / "5.1" / "config" / "userpref.blend").read_bytes(),
             b"preferences",
@@ -673,6 +676,126 @@ class PackScriptTest(unittest.TestCase):
         self.assertEqual(manifest["blender_version"], "5.1.0")
         self.assertEqual(manifest["file_count"], 1)
         self.assertTrue(manifest.get("machine") is not None)
+
+
+class DetectConfigFileTest(unittest.TestCase):
+    """detect_config_file：统一导入的类型自动识别（v1.4.0）。"""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _write_zip(self, name, entries):
+        path = self.root / name
+        with zipfile.ZipFile(path, "w") as zf:
+            for arcname, data in entries.items():
+                zf.writestr(arcname, data)
+        return path
+
+    def test_detects_profile_by_manifest_without_type(self):
+        path = self._write_zip(
+            "MMY_Backup_Profile_v5.1.0_20260906.zip",
+            {"manifest.json": json.dumps({"schema_version": 2, "source": {}})},
+        )
+        self.assertEqual(core.detect_config_file(path), "profile")
+
+    def test_detects_portable_by_manifest_type(self):
+        path = self._write_zip(
+            "MMY_Backup_Portable_v5.1.0_20260906.zip",
+            {"manifest.json": json.dumps({"type": "portable"}), "portable/5.1/config/x": "d"},
+        )
+        self.assertEqual(core.detect_config_file(path), "portable")
+
+    def test_detects_recovery_json(self):
+        path = self.root / "recovery.json"
+        path.write_text("{}", encoding="utf-8")
+        self.assertEqual(core.detect_config_file(path), "recovery")
+
+    def test_unknown_for_other_json_and_broken_zip(self):
+        other = self.root / "other.json"
+        other.write_text("{}", encoding="utf-8")
+        self.assertEqual(core.detect_config_file(other), "unknown")
+        broken = self.root / "broken.zip"
+        broken.write_bytes(b"not a zip")
+        self.assertEqual(core.detect_config_file(broken), "unknown")
+        no_manifest = self._write_zip("nomani.zip", {"a.txt": "x"})
+        self.assertEqual(core.detect_config_file(no_manifest), "unknown")
+
+    def test_fallback_detects_legacy_portable_without_manifest(self):
+        # v1.2.0 及更早的全量备份没有 manifest.json
+        path = self._write_zip(
+            "MMY_Backup_Portable_v4.2.0_old.zip",
+            {"portable/4.2/config/userpref.blend": "p"},
+        )
+        self.assertEqual(core.detect_config_file(path), "portable")
+
+    def test_fallback_detects_legacy_profile_without_manifest(self):
+        path = self._write_zip(
+            "MMY_Backup_Profile_old.zip",
+            {"fallback/keymap.py": "k", "config/userpref.blend": "p"},
+        )
+        self.assertEqual(core.detect_config_file(path), "profile")
+
+
+class ExtractPortableBackupSafeguardTest(unittest.TestCase):
+    """extract_portable_backup 安全防线：保护目录拒绝 + 覆盖前自动备份。"""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _make_backup_zip(self, name, files):
+        path = self.root / name
+        with zipfile.ZipFile(path, "w") as zf:
+            for arcname, data in files.items():
+                zf.writestr(arcname, data)
+        return path
+
+    def test_refuses_dest_overlapping_protected_root(self):
+        user_root = self.root / "5.1" / "config"
+        user_root.mkdir(parents=True)
+        backup = self._make_backup_zip("b.zip", {"portable/x/y.txt": "d"})
+        for dest in (user_root, user_root / "scripts", self.root / "5.1"):
+            with self.assertRaises(core.MigrationError):
+                core.extract_portable_backup(
+                    backup, dest, protected_roots=[user_root]
+                )
+
+    def test_overwrite_creates_safety_backup_with_original_content(self):
+        backup = self._make_backup_zip(
+            "b.zip",
+            {"portable/config/userpref.blend": "new-content"},
+        )
+        dest = self.root / "restored"
+        (dest / "portable" / "config").mkdir(parents=True)
+        target = dest / "portable" / "config" / "userpref.blend"
+        target.write_text("original-content", encoding="utf-8")
+
+        count, backup_zip = core.extract_portable_backup(
+            backup, dest, protected_roots=[self.root / "elsewhere"]
+        )
+        self.assertEqual(count, 1)
+        self.assertTrue(backup_zip)
+        self.assertTrue(Path(backup_zip).is_file())
+        with zipfile.ZipFile(backup_zip) as zf:
+            self.assertEqual(
+                zf.read("portable/config/userpref.blend").decode("utf-8"),
+                "original-content",
+            )
+        self.assertEqual(target.read_text(encoding="utf-8"), "new-content")
+
+    def test_no_overwrite_no_backup_file(self):
+        backup = self._make_backup_zip("b.zip", {"portable/new.txt": "d"})
+        dest = self.root / "fresh"
+        count, backup_zip = core.extract_portable_backup(backup, dest)
+        self.assertEqual(count, 1)
+        self.assertEqual(backup_zip, "")
 
 
 if __name__ == "__main__":

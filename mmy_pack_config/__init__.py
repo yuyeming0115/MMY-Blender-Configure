@@ -1,7 +1,7 @@
 bl_info = {
     "name": "MMY Blender Configure（配置迁移与打包）",
     "author": "会叫喵的鱼",
-    "version": (1, 3, 0),
+    "version": (1, 4, 0),
     "blender": (4, 5, 0),
     "category": "MMY-Tools",
     "description": "Blender 跨版本配置迁移、Portable 备份与插件加载耗时监控",
