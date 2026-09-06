@@ -412,8 +412,11 @@ def create_profile(snapshot: SourceSnapshot, output_dir: Path) -> ProfileResult:
         )
         components.add(component)
 
+    # 先写 .part 临时名，成功后原子替换：中途强退不会留下截断的 zip
+    # 冒充有效备份（.part 不会被 list_backup_entries 的 *.zip 扫描命中）
+    staging_path = profile_path.with_name(profile_path.name + ".part")
     try:
-        with zipfile.ZipFile(profile_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+        with zipfile.ZipFile(staging_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
             for source, archive_base, component, exclude_top_dirs in _profile_sources(snapshot):
                 if source.is_symlink():
                     warnings.append(f"已跳过符号链接：{source}")
@@ -473,7 +476,9 @@ def create_profile(snapshot: SourceSnapshot, output_dir: Path) -> ProfileResult:
                 "warnings": warnings,
             }
             zf.writestr("manifest.json", _json_dump(manifest))
+        os.replace(staging_path, profile_path)
     except Exception:
+        staging_path.unlink(missing_ok=True)
         profile_path.unlink(missing_ok=True)
         raise
 
@@ -485,6 +490,7 @@ def detect_config_file(path: Path) -> str:
 
     两类 zip 均在根目录带 manifest.json：Portable 备份的 manifest 含
     type="portable"（pack_script 写入），跨版本配置包没有该字段。
+    v1.2.0 及更早的备份没有 manifest.json，按内容特征兜底识别。
     """
     path = Path(path)
     if path.suffix.lower() == ".json":
@@ -493,12 +499,19 @@ def detect_config_file(path: Path) -> str:
         return "unknown"
     try:
         with zipfile.ZipFile(path) as zf:
-            if "manifest.json" not in set(zf.namelist()):
-                return "unknown"
-            manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+            names = set(zf.namelist())
+            if "manifest.json" in names:
+                manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+                return "portable" if manifest.get("type") == "portable" else "profile"
+            # v1.2.0 及更早的备份没有 manifest.json，按内容特征兜底识别：
+            # 配置包带 fallback/keymap.py，全量备份的条目位于 portable/ 下
+            if any(n.startswith("fallback/") for n in names):
+                return "profile"
+            if any(n == "portable" or n.startswith("portable/") or "/portable/" in n for n in names):
+                return "portable"
+            return "unknown"
     except Exception:
         return "unknown"
-    return "portable" if manifest.get("type") == "portable" else "profile"
 
 
 def read_profile_manifest(profile_path: Path) -> dict[str, Any]:
@@ -1673,11 +1686,51 @@ def read_portable_backup_manifest(zip_path: Path) -> dict[str, Any]:
         return {}
 
 
-def extract_portable_backup(zip_path: Path, dest_dir: Path) -> int:
-    """安全解压 Portable 备份到指定目录，返回文件数。"""
+def extract_portable_backup(
+    zip_path: Path,
+    dest_dir: Path,
+    protected_roots: Iterable[Path] = (),
+) -> tuple[int, str]:
+    """安全解压 Portable 备份到指定目录。
+
+    返回 (解压文件数, 覆盖前自动备份的 zip 路径；无覆盖时为空串)。
+
+    两道防线（备份体系公理：任何写路径前，唯一副本必须已受保护）：
+      1. dest_dir 落在任一 protected_roots 之内或包含之 → 拒绝（防止把
+         旧备份直接解压覆盖当前正在使用的配置目录）；
+      2. 解压前扫描将被同名覆盖的现有文件，打包为
+         <dest>_mmy_restore_backup_<时间戳>.zip 存到 dest 同级。
+    """
     zip_path = Path(zip_path)
-    dest_dir = Path(dest_dir)
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_dir = Path(dest_dir).resolve(strict=False)
+
+    for root in protected_roots or []:
+        root = Path(root).resolve(strict=False)
+        if root == dest_dir or path_is_within(dest_dir, root) or path_is_within(root, dest_dir):
+            raise MigrationError(
+                f"解压目标 {dest_dir} 与当前使用的配置目录重叠，已拒绝执行"
+            )
+
+    overwrite_targets: list[tuple[Path, PurePosixPath]] = []
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for info in zf.infolist():
+            if info.is_dir() or info.filename == "manifest.json":
+                continue
+            relative = _safe_archive_path(info.filename)
+            existing = dest_dir.joinpath(*relative.parts)
+            if existing.is_file():
+                overwrite_targets.append((existing, relative))
+
+    backup_zip_path = ""
+    if overwrite_targets:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_zip_path = str(
+            dest_dir.parent / f"{dest_dir.name}_mmy_restore_backup_{timestamp}.zip"
+        )
+        with zipfile.ZipFile(backup_zip_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as backup:
+            for existing, relative in overwrite_targets:
+                backup.write(existing, str(relative))
+
     count = 0
     with zipfile.ZipFile(zip_path, "r") as zf:
         for info in zf.infolist():
@@ -1695,7 +1748,7 @@ def extract_portable_backup(zip_path: Path, dest_dir: Path) -> int:
             with zf.open(info, "r") as source, target.open("wb") as destination:
                 shutil.copyfileobj(source, destination, 1024 * 1024)
             count += 1
-    return count
+    return count, backup_zip_path
 
 
 # ============================================================
