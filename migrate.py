@@ -237,8 +237,17 @@ def describe_profile(
 # ============================================================
 
 
-def run_migration(profile_path, executable_path, preflight: dict | None = None) -> dict:
-    """执行迁移，返回 {outcome, report_html, recovery_dir} 供展示。"""
+def run_migration(
+    profile_path,
+    executable_path,
+    preflight: dict | None = None,
+    progress=None,
+) -> dict:
+    """执行迁移，返回 {outcome, report_html, recovery_dir} 供展示。
+
+    ``progress`` 为可选阶段回调 (stage_key, message, ratio)，供 GUI 上报进度；
+    默认 None 时行为与命令行模式完全一致。
+    """
     core = load_migration_core()
     manifest = validate_profile(profile_path)
     profile = Path(profile_path)
@@ -257,6 +266,7 @@ def run_migration(profile_path, executable_path, preflight: dict | None = None) 
         current_user_root=source_user_root(manifest) or None,
         worker_script=WORKER_SCRIPT,
         current_pid=os.getpid(),
+        progress=progress,
     )
 
     outcome = outcomes[0]

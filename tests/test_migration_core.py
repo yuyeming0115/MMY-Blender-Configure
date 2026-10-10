@@ -631,6 +631,94 @@ class MigrationCoreTest(unittest.TestCase):
             (result.recovery_dir / "donor_startup.blend").read_bytes(), b"startup"
         )
 
+    def test_progress_callback_reports_stages_in_order(self):
+        """GUI 依赖阶段顺序显示进度：parse → probe → backup → install → audit → report。"""
+        inventory = self.root / "workspaces.json"
+        inventory.write_text(
+            json.dumps({"schema_version": 1, "items": []}), encoding="utf-8"
+        )
+        profile = core.create_profile(
+            self.snapshot(workspaces_inventory_path=inventory), self.output
+        )
+        target_root = self.root / "target" / "5.2"
+        (target_root / "config").mkdir(parents=True)
+        recovery_output = self.root / "migration_output"
+        probe = {
+            "version": [5, 2, 0],
+            "user_root": str(target_root),
+            "config_dir": str(target_root / "config"),
+            "scripts_dir": str(target_root / "scripts"),
+            "datafiles_dir": str(target_root / "datafiles"),
+            "extensions_dir": str(target_root / "extensions"),
+        }
+        seen: list[str] = []
+
+        def fake_audit(*args, **kwargs):
+            report_path = args[4]
+            report = {"status": "success", "disabled_addons": [], "warnings": []}
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            return report
+
+        with mock.patch.object(
+            core, "run_target_probe", return_value=probe
+        ), mock.patch.object(core, "run_target_audit", side_effect=fake_audit):
+            result = core.execute_existing_profile_migration(
+                profile.path,
+                self.root / "Blender 5.2" / "blender.exe",
+                recovery_output,
+                self.user_root,
+                self.root / "migration_worker.py",
+                current_pid=123,
+                progress=lambda stage, message="", ratio=None: seen.append(stage),
+            )
+
+        self.assertEqual(result.status, "success")
+        expected = ["parse", "probe", "backup", "install", "audit", "report"]
+        for key in expected:
+            self.assertIn(key, seen, f"阶段 {key} 未上报")
+        positions = [seen.index(key) for key in expected]
+        self.assertEqual(positions, sorted(positions), f"阶段顺序错乱：{seen}")
+
+    def test_progress_callback_failure_does_not_break_migration(self):
+        """进度回调来自 GUI：它崩了也不能让用户的迁移失败。"""
+        profile = core.create_profile(self.snapshot(), self.output)
+        target_root = self.root / "target" / "5.2"
+        target_root.mkdir(parents=True)
+        recovery_output = self.root / "migration_output"
+        probe = {
+            "version": [5, 2, 0],
+            "user_root": str(target_root),
+            "config_dir": str(target_root / "config"),
+            "scripts_dir": str(target_root / "scripts"),
+            "datafiles_dir": str(target_root / "datafiles"),
+            "extensions_dir": str(target_root / "extensions"),
+        }
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("GUI 挂了")
+
+        def fake_audit(*args, **kwargs):
+            report_path = args[4]
+            report = {"status": "success", "disabled_addons": [], "warnings": []}
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            return report
+
+        with mock.patch.object(
+            core, "run_target_probe", return_value=probe
+        ), mock.patch.object(core, "run_target_audit", side_effect=fake_audit):
+            result = core.execute_existing_profile_migration(
+                profile.path,
+                self.root / "Blender 5.2" / "blender.exe",
+                recovery_output,
+                self.user_root,
+                self.root / "migration_worker.py",
+                current_pid=123,
+                progress=boom,
+            )
+
+        self.assertEqual(result.status, "success")
+        self.assertTrue((target_root / "config" / "userpref.blend").is_file())
+
     def test_audit_failure_rolls_back_and_exposes_recovery_directory(self):
         profile = core.create_profile(self.snapshot(), self.output)
         target_root = self.root / "target" / "5.2"

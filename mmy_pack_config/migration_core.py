@@ -17,6 +17,7 @@ import subprocess
 import time
 import uuid
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -1038,6 +1039,25 @@ def _write_recovery_metadata(path: Path, data: dict[str, Any]) -> None:
     os.replace(temp, path)
 
 
+def _emit_progress(
+    progress: Callable[..., None] | None,
+    stage: str,
+    message: str,
+    ratio: float | None = None,
+) -> None:
+    """向上层（GUI）上报阶段进度。
+
+    回调由 GUI 提供，必须假定它可能抛出任何异常：进度显示失败绝不能
+    影响迁移结果，因此这里吞掉全部异常。
+    """
+    if progress is None:
+        return
+    try:
+        progress(stage, message, ratio)
+    except Exception:  # noqa: BLE001 —— 进度回调异常不影响主流程
+        pass
+
+
 def _install_profile_for_target(
     profile: ProfileResult,
     source_version: Iterable[int],
@@ -1047,8 +1067,10 @@ def _install_profile_for_target(
     worker_script: Path,
     current_pid: int,
     audit_timeout: int,
+    progress: Callable[..., None] | None = None,
 ) -> MigrationResult:
     """对单个目标执行探针校验 + 安装，供单目标与多目标流程复用。"""
+    _emit_progress(progress, "probe", f"检测目标 Blender：{target_executable.name}")
     if os.name == "nt" and windows_executable_is_running(target_executable, [current_pid]):
         raise MigrationError(f"目标 Blender 正在运行，请关闭后重试：{target_executable}")
     probe = run_target_probe(target_executable)
@@ -1073,6 +1095,7 @@ def _install_profile_for_target(
         worker_script=worker_script,
         current_pid=current_pid,
         audit_timeout=audit_timeout,
+        progress=progress,
     )
 
 
@@ -1087,6 +1110,7 @@ def execute_migration_multi(
     worker_script: Path,
     current_pid: int,
     audit_timeout: int = 300,
+    progress: Callable[..., None] | None = None,
 ) -> tuple[ProfileResult, list[TargetMigrationOutcome]]:
     """一份快照迁移到多个目标：先建一次 Profile，再逐目标独立安装。
 
@@ -1095,6 +1119,7 @@ def execute_migration_multi(
     targets = [Path(target) for target in target_executables]
     if not targets:
         raise MigrationError("未选择任何目标 Blender")
+    _emit_progress(progress, "parse", "生成迁移配置包")
     output = ensure_external_output(Path(output_dir), [snapshot.user_root])
     profile = create_profile(snapshot, output)
     outcomes: list[TargetMigrationOutcome] = []
@@ -1109,6 +1134,7 @@ def execute_migration_multi(
                 worker_script=worker_script,
                 current_pid=current_pid,
                 audit_timeout=audit_timeout,
+                progress=progress,
             )
             outcomes.append(TargetMigrationOutcome(target_executable=target, result=result))
         except Exception as exc:
@@ -1125,6 +1151,7 @@ def execute_migration(
     worker_script: Path,
     current_pid: int,
     audit_timeout: int = 300,
+    progress: Callable[..., None] | None = None,
 ) -> MigrationResult:
     profile, outcomes = execute_migration_multi(
         snapshot,
@@ -1133,6 +1160,7 @@ def execute_migration(
         worker_script,
         current_pid,
         audit_timeout=audit_timeout,
+        progress=progress,
     )
     outcome = outcomes[0]
     if outcome.result is not None:
@@ -1150,15 +1178,18 @@ def execute_existing_profile_migration_multi(
     worker_script: Path,
     current_pid: int,
     audit_timeout: int = 300,
+    progress: Callable[..., None] | None = None,
 ) -> tuple[ProfileResult, list[TargetMigrationOutcome]]:
     """已有配置包迁移到多个目标，逐目标独立安装。
 
     ``current_user_root`` 为发起迁移的 Blender 用户目录（自迁移防护）；
     独立 CLI 等无 Blender 会话的场景可传 ``None``，此时跳过该防护。
+    ``progress`` 可选，用于向 GUI 上报阶段（默认 None 不上报）。
     """
     targets = [Path(target) for target in target_executables]
     if not targets:
         raise MigrationError("未选择任何目标 Blender")
+    _emit_progress(progress, "parse", "读取配置包")
     manifest = read_profile_manifest(profile_path)
     if manifest.get("source", {}).get("platform") != "win32":
         raise MigrationError("跨版本一键迁移第一版只接受 Windows 配置快照")
@@ -1184,6 +1215,7 @@ def execute_existing_profile_migration_multi(
                 worker_script=worker_script,
                 current_pid=current_pid,
                 audit_timeout=audit_timeout,
+                progress=progress,
             )
             outcomes.append(TargetMigrationOutcome(target_executable=target, result=result))
         except Exception as exc:
@@ -1201,6 +1233,7 @@ def execute_existing_profile_migration(
     worker_script: Path,
     current_pid: int,
     audit_timeout: int = 300,
+    progress: Callable[..., None] | None = None,
 ) -> MigrationResult:
     profile, outcomes = execute_existing_profile_migration_multi(
         profile_path,
@@ -1210,6 +1243,7 @@ def execute_existing_profile_migration(
         worker_script,
         current_pid,
         audit_timeout=audit_timeout,
+        progress=progress,
     )
     outcome = outcomes[0]
     if outcome.result is not None:
@@ -1229,6 +1263,7 @@ def _install_profile(
     worker_script: Path,
     current_pid: int,
     audit_timeout: int,
+    progress: Callable[..., None] | None = None,
 ) -> MigrationResult:
     source_version = normalize_version(source_version)
 
@@ -1254,6 +1289,7 @@ def _install_profile(
     )
     recovery_dir.mkdir(parents=True, exist_ok=False)
     recovery_path = recovery_dir / "recovery.json"
+    _emit_progress(progress, "backup", "备份目标现有配置")
     backup = create_directory_backup(target_root, recovery_dir / "target_before.zip")
     metadata: dict[str, Any] = {
         "schema_version": 1,
@@ -1276,6 +1312,7 @@ def _install_profile(
     old_root: Path | None = None
     swapped = False
     try:
+        _emit_progress(progress, "install", "解包配置包")
         manifest = extract_profile(profile.path, staging_root, fallback_root)
         manifest_path = recovery_dir / "source_manifest.json"
         manifest_path.write_text(_json_dump(manifest), encoding="utf-8")
@@ -1284,6 +1321,7 @@ def _install_profile(
             [current_pid],
         ):
             raise MigrationError("目标 Blender 在迁移准备期间被打开，请关闭后重试")
+        _emit_progress(progress, "install", "切换到新配置（原子替换目录）")
         old_root = atomic_install(staging_root, target_root, run_id)
         swapped = True
 
@@ -1317,6 +1355,9 @@ def _install_profile(
         _write_recovery_metadata(recovery_path, metadata)
 
         report_path = recovery_dir / "migration_report.json"
+        _emit_progress(
+            progress, "audit", "启动目标 Blender 审计（本次最耗时的一步）"
+        )
         report = run_target_audit(
             _resolved(target_executable),
             worker_script,
@@ -1334,6 +1375,7 @@ def _install_profile(
         metadata["report_path"] = str(report_path)
         _write_recovery_metadata(recovery_path, metadata)
         html_report_path = report_path.with_suffix(".html")
+        _emit_progress(progress, "report", "生成审计报告")
         try:
             write_migration_report_html(report, metadata, html_report_path)
             metadata["report_html_path"] = str(html_report_path)
