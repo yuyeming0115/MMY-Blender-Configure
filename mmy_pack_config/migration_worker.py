@@ -1,6 +1,9 @@
 """在目标 Blender 中运行的迁移审计脚本。
 
 此文件通过 ``blender --background --python`` 直接执行，不依赖插件注册成功。
+
+v1.5.0：可选 donor 模式——启动文件不再被旧版快照整体替换，而是在目标
+自己的启动文件（新版默认工作区布局）基础上，追加旧配置中的自定义工作区。
 """
 
 from __future__ import annotations
@@ -20,11 +23,32 @@ import bpy
 from migration_core import classify_keymap_audit
 
 
-def _script_arguments() -> tuple[Path, Path, Path, Path]:
+# v1.5.0 工作区级布局恢复：出厂工作区是新版 UI 的载体，一律不移植
+FACTORY_WORKSPACE_NAMES = frozenset(
+    {
+        "Layout",
+        "Modeling",
+        "Sculpting",
+        "UV Editing",
+        "Texture Paint",
+        "Shading",
+        "Rendering",
+        "Compositing",
+        "Geometry Nodes",
+        "Scripting",
+        "Motion Tracking",
+        "Masking",
+        "VFX",
+        "Video Editing",
+    }
+)
+
+
+def _script_arguments() -> tuple[Path, ...]:
     if "--" not in sys.argv:
         raise RuntimeError("缺少迁移审计参数")
     args = sys.argv[sys.argv.index("--") + 1 :]
-    if len(args) != 4:
+    if len(args) not in {4, 6}:
         raise RuntimeError("迁移审计参数数量错误")
     return tuple(Path(value) for value in args)  # type: ignore[return-value]
 
@@ -233,8 +257,98 @@ def _audit_paths() -> list[dict]:
     return missing[:200]
 
 
+def _restore_workspaces(donor_startup: Path, inventory_path: Path) -> dict:
+    """donor 模式：在目标自己的启动文件上追加旧配置的自定义工作区。
+
+    设计要点：
+    - 默认工作区（FACTORY_WORKSPACE_NAMES）是新版 UI 的载体，一律不移植；
+    - 追加走 bpy.data.libraries.load（数据经内核 do_versions 升级，
+      比拷贝文件更可靠），仅追加成功后才 save_as_mainfile；
+    - 任何失败只记录 errors，不抛出——工作区恢复是附加价值，
+      不应阻断或回滚整个迁移。
+    """
+    result = {"mode": "donor", "restored": [], "skipped": [], "errors": []}
+    startup_path = Path(bpy.utils.user_resource("CONFIG")) / "startup.blend"
+
+    try:
+        bpy.ops.wm.read_homefile()
+    except Exception as exc:
+        result["errors"].append(f"读取目标启动文件失败：{exc}")
+        return result
+
+    try:
+        inventory = json.loads(Path(inventory_path).read_text(encoding="utf-8"))
+        items = inventory.get("items") or []
+    except Exception as exc:
+        result["errors"].append(f"工作区清单解析失败：{exc}")
+        items = []
+
+    # 清单缺失/损坏时兜底：把捐赠文件中非默认工作区全部视为自定义
+    if items:
+        wanted = [item.get("name", "") for item in items if not item.get("factory")]
+    else:
+        wanted = []
+        try:
+            with bpy.data.libraries.load(str(donor_startup), link=True) as (
+                data_from,
+                _data_to,
+            ):
+                wanted = [
+                    name
+                    for name in data_from.workspaces
+                    if name not in FACTORY_WORKSPACE_NAMES
+                ]
+        except Exception as exc:
+            result["errors"].append(f"读取捐赠文件工作区失败：{exc}")
+            return result
+
+    existing = {workspace.name for workspace in bpy.data.workspaces}
+    to_append = [name for name in wanted if name and name not in existing]
+    result["skipped"] = [name for name in wanted if name in existing]
+
+    if to_append:
+        appended_names: list[str] = []
+        try:
+            with bpy.data.libraries.load(str(donor_startup), link=False) as (
+                data_from,
+                data_to,
+            ):
+                available = set(data_from.workspaces)
+                data_to.workspaces = [name for name in to_append if name in available]
+                result["skipped"].extend(
+                    name for name in to_append if name not in available
+                )
+            appended_names = [
+                workspace.name
+                for workspace in bpy.data.workspaces
+                if workspace.name not in existing
+            ]
+        except Exception as exc:
+            result["errors"].append(f"追加自定义工作区失败：{exc}")
+            return result
+
+        result["restored"] = sorted(appended_names)
+        # 只有确认追加成功才写回启动文件；中途失败不污染目标启动文件
+        try:
+            save_result = bpy.ops.wm.save_as_mainfile(
+                filepath=str(startup_path),
+                check_existing=False,
+            )
+            if "FINISHED" not in save_result:
+                result["errors"].append("启动文件保存未确认完成")
+        except Exception as exc:
+            result["errors"].append(f"保存启动文件失败：{exc}")
+
+    return result
+
+
 def run() -> dict:
-    manifest_path, fingerprint_path, report_path, expected_root = _script_arguments()
+    manifest_path, fingerprint_path, report_path, expected_root = _script_arguments()[:4]
+    donor_startup: Path | None = None
+    workspaces_inventory: Path | None = None
+    extra_args = _script_arguments()[4:]
+    if len(extra_args) == 2:
+        donor_startup, workspaces_inventory = extra_args
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     actual_root = Path(bpy.utils.resource_path("USER")).resolve(strict=False)
     expected = expected_root.resolve(strict=False)
@@ -253,6 +367,21 @@ def run() -> dict:
         raise RuntimeError(f"无法安全禁用不兼容插件：{modules}")
     keymap = _audit_keymap(fingerprint_path)
     missing_paths = _audit_paths()
+
+    workspace_report = None
+    if donor_startup is not None and workspaces_inventory is not None:
+        try:
+            workspace_report = _restore_workspaces(donor_startup, workspaces_inventory)
+        except Exception as exc:  # 防御：绝不因布局恢复中断审计
+            workspace_report = {
+                "mode": "donor",
+                "restored": [],
+                "skipped": [],
+                "errors": [f"工作区恢复异常：{exc}"],
+            }
+        for ws_error in workspace_report.get("errors") or []:
+            warnings.append(f"工作区恢复：{ws_error}")
+
     save_result = bpy.ops.wm.save_userpref()
     if "FINISHED" not in save_result:
         raise RuntimeError("目标 Blender 无法保存迁移后的偏好设置")
@@ -275,6 +404,7 @@ def run() -> dict:
         "disabled_addons": disabled,
         "keymap": keymap,
         "missing_paths": missing_paths,
+        "workspaces": workspace_report,
         "warnings": warnings,
     }
     _write_json(report_path, report)
@@ -284,7 +414,8 @@ def run() -> dict:
 if __name__ == "__main__":
     report_target = None
     try:
-        _, _, report_target, _ = _script_arguments()
+        _args = _script_arguments()
+        report_target = _args[2] if len(_args) >= 3 else None
         result = run()
         print(f"[MMY Migration] {result['status']}")
     except Exception as exc:
