@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blender 跨版本配置迁移可行性分析报告 — 第一性原理 + 社区数据</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --card:#ffffff; --ink:#1f2430; --ink2:#5a6472;
+    --line:#e4e8ee; --accent:#2657cd; --accent-soft:#eaf0fd;
+    --ok:#0f8a4c; --ok-bg:#e8f7ef; --warn:#b26a00; --warn-bg:#fdf3e3;
+    --bad:#c0392b; --bad-bg:#fdecea; --mid:#8a5a00; --mono:#f2f4f7;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
+    font-size:16px;line-height:1.75;}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 28px 80px}
+  header.hero{background:linear-gradient(135deg,#2657cd,#4a7fe8);color:#fff;
+    border-radius:14px;padding:36px 40px;margin-bottom:32px}
+  header.hero h1{margin:0 0 8px;font-size:28px}
+  header.hero p{margin:4px 0;opacity:.92;font-size:14px}
+  .verdict{background:var(--card);border-left:6px solid var(--warn);border-radius:10px;
+    padding:22px 28px;margin:28px 0;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+  .verdict h2{margin:0 0 10px;font-size:20px;color:var(--warn)}
+  h2.sec{font-size:22px;margin:44px 0 14px;padding-bottom:8px;border-bottom:2px solid var(--line)}
+  h3{font-size:18px;margin:26px 0 8px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:18px 24px;margin:14px 0;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14.5px;background:var(--card)}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:#eef2f8;font-weight:600}
+  tr:nth-child(even) td{background:#fafbfc}
+  .tag{display:inline-block;padding:1px 10px;border-radius:999px;font-size:12.5px;font-weight:600;white-space:nowrap}
+  .tag.ok{background:var(--ok-bg);color:var(--ok)}
+  .tag.warn{background:var(--warn-bg);color:var(--warn)}
+  .tag.bad{background:var(--bad-bg);color:var(--bad)}
+  .tag.mid{background:#f3ecda;color:var(--mid)}
+  code{background:var(--mono);padding:2px 7px;border-radius:5px;font-size:13.5px;
+    font-family:Consolas,"Cascadia Code",monospace}
+  .quote{background:#f6f8fb;border-left:4px solid var(--accent);border-radius:0 8px 8px 0;
+    padding:12px 18px;margin:12px 0;font-size:14.5px;color:var(--ink2)}
+  .quote .src{display:block;margin-top:6px;font-size:12.5px;color:#8a93a3}
+  .layers{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin:16px 0}
+  .layer{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 20px}
+  .layer h4{margin:0 0 8px;font-size:16px}
+  .layer .risk{font-size:13px;color:var(--ink2)}
+  .flow{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:18px 0}
+  .step{background:var(--accent-soft);border:1px solid #c6d6f5;color:var(--accent);
+    border-radius:8px;padding:10px 16px;font-weight:600;font-size:14.5px}
+  .arrow{color:#98a4b8;font-size:18px;font-weight:700}
+  .conclusion-num{font-size:44px;font-weight:800;color:var(--accent)}
+  ul.tight li{margin:4px 0}
+  footer{margin-top:56px;padding-top:18px;border-top:1px solid var(--line);
+    font-size:13px;color:var(--ink2)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>Blender 跨版本配置迁移可行性分析报告</h1>
+  <p>分析对象：MMY Blender Configure（pack.py / portable 配置打包）扩展为「配置导出 → 跨版本导入」的可行性</p>
+  <p>方法论：第一性原理拆解 + 官方文档 + 社区 issue/论坛实证数据</p>
+  <p>报告日期：2026-10-10 ｜ 覆盖版本：Blender 2.8x → 4.5 / 5.x</p>
+</header>
+
+<div class="verdict">
+  <h2>核心结论（TL;DR）</h2>
+  <p><b>「无缝迁移 + 任意版本 100% 正确无误」——不可达成。</b>
+  但 <b>「同版本/同主次版本机器间迁移 100% 可靠」已经达成</b>（当前 pack.py 整包方案天然满足），
+  而 <b>「跨版本迁移做到工程级可靠（≈90%+ 配置项正确迁移，其余可检测、可降级、可修复）」可以达成</b>，
+  前提是放弃「整目录文件拷贝」单一路线，改为<b>分层迁移 + 导入侧校验</b>架构。</p>
+  <p style="margin-bottom:0">决定性障碍不是文件格式，而是两个结构性事实：
+  ① <code>userpref.blend</code> 是二进制 Blender 文件，只能由 Blender 内核做<b>单向向上</b>版本升级；
+  ② 4.2 的 Extensions 大改版把插件的「存储位置、启用机制、预设路径」整体重排，
+  这是 Blender 历史上配置结构最大的一次断裂。</p>
+</div>
+
+<h2 class="sec">一、第一性原理：把「用户配置」拆到不可再拆</h2>
+
+<p>要回答「能否正确迁移」，首先要回答「配置到底是什么」。按照 Blender 官方目录规范
+（docs.blender.org → Directory Layout），portable/ 或 %APPDATA% 版本目录下的用户配置可拆为 6 个原子层，
+每层有<b>完全不同的版本耦合度</b>——这正是「一个 zip 打天下」思路失败的根源：</p>
+
+<div class="layers">
+  <div class="layer">
+    <h4>① userpref.blend <span class="tag warn">版本强耦合</span></h4>
+    <div class="risk">二进制 .blend 格式。存 UI 缩放、快捷键、主题引用、插件启用列表、路径偏好。
+    Blender 内核启动时通过 do_versions 机制<b>只能旧→新单向升级</b>，无降级路径。
+    高版本保存的文件低版本读取结果未定义。</div>
+  </div>
+  <div class="layer">
+    <h4>② startup.blend <span class="tag warn">版本强耦合</span></h4>
+    <div class="risk">完整的启动场景文件。跨大版本拷贝后常见 UI 布局错乱、图标丢失、
+    工作区引用失效（社区有大量「Load factory settings 再 Save startup」修复案例）。</div>
+  </div>
+  <div class="layer">
+    <h4>③ scripts/addons/（传统插件） <span class="tag bad">4.2 断裂点</span></h4>
+    <div class="risk">Python 代码本身。跨版本正确性取决于插件代码对 bpy API 的兼容性，
+    与文件拷贝无关。4.2 起内置插件迁移到 extensions，此目录语义改变。</div>
+  </div>
+  <div class="layer">
+    <h4>④ extensions/（4.2+ 扩展仓库） <span class="tag bad">4.2 断裂点</span></h4>
+    <div class="risk">含仓库索引、缓存、已下载扩展。每个扩展声明 version_min/version_max，
+    Blender 按目标版本过滤。整目录拷贝可能带入与目标版本不兼容的扩展包。</div>
+  </div>
+  <div class="layer">
+    <h4>⑤ datafiles / presets <span class="tag ok">弱耦合</span></h4>
+    <div class="risk">字体、studio lights、配色主题 XML、自定义预设（Python 片段）。
+    纯数据文件，跨版本基本可直接拷贝。注意 4.2 部分内置预设路径重排（issue #124020）。</div>
+  </div>
+  <div class="layer">
+    <h4>⑥ 轻量文本配置 <span class="tag ok">无耦合</span></h4>
+    <div class="risk">bookmarks.txt、recent-files.txt、platform_support.txt 等。
+    纯文本，任意版本、任意机器直接拷贝，唯一风险是绝对路径失效。</div>
+  </div>
+</div>
+
+<div class="card">
+<b>第一性原理推论：</b>「配置迁移」不是单一问题，而是 6 个独立子问题。
+其中 ⑤⑥ 可以直接文件拷贝；①② 必须借助 Blender 内核自己的版本升级通道；
+③④ 本质是「按目标版本重新解析插件依赖」，拷贝文件只能解决一半。
+因此：<b>不存在对所有层同时正确的单一文件操作</b>——这是「无缝 100% 正确」在原理上不成立的直接证明。
+</div>
+
+<h2 class="sec">二、版本演进中的三个断裂点（大数据时间线）</h2>
+
+<table>
+  <tr><th>版本</th><th>结构性变更</th><th>对配置迁移的影响</th><th>严重度</th></tr>
+  <tr>
+    <td>2.8x → 2.9x</td>
+    <td>Python 3.7→3.9，bpy API 持续演进</td>
+    <td>配置文件格式基本稳定，但旧插件代码批量报错；跨 Python 小版本 .pyc 缓存失效</td>
+    <td><span class="tag warn">中</span></td>
+  </tr>
+  <tr>
+    <td>3.x 系列</td>
+    <td>Python 3.10→3.11；EEVEE/资产浏览器等新系统</td>
+    <td>同主版本内 userpref/startup 拷贝基本安全；插件需 API 适配</td>
+    <td><span class="tag ok">低</span></td>
+  </tr>
+  <tr>
+    <td><b>4.2（最大断裂）</b></td>
+    <td><b>Extensions 平台上线：内置插件移出本体、改为在线仓库下载；scripts/addons 语义改变；预设路径重排</b></td>
+    <td>官方「导入旧版偏好」只迁移 startup.blend，<b>不迁移插件启用状态与插件设置</b>；迁移后出现大量 missing scripts 报错与预设丢失</td>
+    <td><span class="tag bad">高</span></td>
+  </tr>
+  <tr>
+    <td>4.3–4.5</td>
+    <td>Extensions 体系稳定；导入偏好机制修补</td>
+    <td>同代内迁移改善，但 4.1→4.2 的历史包袱仍在；出现「已存在 userpref.blend 则跳过导入」边界 bug</td>
+    <td><span class="tag warn">中</span></td>
+  </tr>
+  <tr>
+    <td>5.x（进行中）</td>
+    <td>目录规范已发布（5.1/5.3 手册），沿用 4.2+ 的 extensions 结构</td>
+    <td>结构稳定期，是构建分层迁移工具的最好窗口</td>
+    <td><span class="tag ok">低</span></td>
+  </tr>
+</table>
+
+<h2 class="sec">三、社区用户反馈实证（关键证据链）</h2>
+
+<h3>证据 1：官方迁移功能本身不可靠（Blender 官方 issue）</h3>
+<div class="quote">
+「Can not import preferences from previous version of blender in the new 4.5 release」——首次启动时「导入偏好」按钮直接消失。
+官方维护者回复：若 4.5 的 userpref.blend 已存在（装过 alpha/beta），导入选项不再出现；
+社区建议「切换版本时最好整个删掉新版本文件夹，从零导入」。
+<span class="src">— projects.blender.org/blender/blender/issues/142145（2025-07）</span>
+</div>
+
+<h3>证据 2：4.2 是社区抱怨的震中</h3>
+<div class="quote">
+「Extensions: when migrating user preferences from 4.1 with default addon activated shows missing scripts in 4.2」
+——userpref.blend 里记录的 4.1 默认插件在 4.2 已不存在（被移去 extensions 仓库），启动后控制台刷 missing module 错误。
+<span class="src">— projects.blender.org/blender/blender/issues/121917</span>
+</div>
+<div class="quote">
+「Presets for all extensions in 4.2 are missing…The fix will need a couple of new lines in the init register()」
+——4.1→4.2 迁移后所有扩展的内置预设消失，出现 missing paths 弹窗，最终需要插件作者逐一改代码修复。
+<span class="src">— projects.blender.org/extensions/ant_landscape/issues/2；blender/blender#124020</span>
+</div>
+<div class="quote">
+Stack Exchange 版主明确结论：「4.1→4.2 迁移时，拷贝 userpref.blend 只对 startup.blend 有效，
+对插件设置无效——因为 4.2 的插件安装实现变了，插件被拆为 Built-in 和 Extensions。」
+<span class="src">— blender.stackexchange.com/questions/321754（Harry McKenzie♦）</span>
+</div>
+
+<h3>证据 3：同版本拷贝是社区公认可靠的「土办法」</h3>
+<div class="quote">
+2.82→2.83 保存偏好失效 bug 的官方 issue 下，用户验证：直接把旧版本 config 目录的 userpref.blend 拷到新版本 config 即可恢复设置。
+多台机器复现成功。同类方案在 Stack Exchange 长期作为标准答案（+大量 upvote）。
+<span class="src">— projects.blender.org/blender/blender/issues/77813；blender.stackexchange.com/questions/8570</span>
+</div>
+<div class="quote">
+「Copy the whole version folder…It holds your preferences, add-ons, and presets in one tree.
+Copying only userpref.blend is not enough.」——第三方教程对「整目录拷贝 = 同版本完全迁移」的共识性总结。
+<span class="src">— filepathgeek.com/posts/blender-config-and-addons-location</span>
+</div>
+
+<h3>证据 4：版本锁定是扩展体系的官方设计意图</h3>
+<div class="quote">
+开发者 Brecht（Blender 基金会）在 devtalk 确认：每个扩展声明 version_min/version_max，
+不兼容目标 Blender 版本的更新不会推送给用户，且网站保留旧版本可手动回退下载。
+这说明官方把「插件与 Blender 版本的匹配」视为<b>运行时解析问题</b>，而非文件拷贝问题。
+<span class="src">— devtalk.blender.org/t/changes-to-add-on-and-themes-bundling-4-2-onwards</span>
+</div>
+
+<h2 class="sec">四、可行性判定矩阵</h2>
+
+<table>
+  <tr><th>迁移场景</th><th>整目录拷贝（现状 pack.py）</th><th>分层迁移方案</th><th>判定</th></tr>
+  <tr>
+    <td>同版本，A 机器 → B 机器</td>
+    <td>✅ 完全可靠（含插件、预设、缓存外的全部状态）</td>
+    <td>✅ 同样可靠</td>
+    <td><span class="tag ok">已达成</span></td>
+  </tr>
+  <tr>
+    <td>小版本升级（4.4.x → 4.5.x，同代）</td>
+    <td>⚠️ 大概率可用，偶发预设/扩展路径问题</td>
+    <td>✅ 可靠（拷贝 ⑤⑥，①② 走 Blender 内核升级，③④ 按版本重解析）</td>
+    <td><span class="tag ok">可达成</span></td>
+  </tr>
+  <tr>
+    <td>跨断裂点（4.1 → 4.2+）</td>
+    <td>❌ missing scripts 报错、预设丢失、插件启用状态错乱</td>
+    <td>⚠️ 可迁移偏好/预设/数据文件，插件列表转为「待重装清单」</td>
+    <td><span class="tag warn">部分达成</span></td>
+  </tr>
+  <tr>
+    <td>跨大版本（3.6 → 5.x）</td>
+    <td>❌ startup/UI 错乱风险高，插件代码大面积不兼容</td>
+    <td>⚠️ 数据文件与文本配置可靠；偏好经内核升级大体可用；插件必须逐版本重装</td>
+    <td><span class="tag warn">部分达成</span></td>
+  </tr>
+  <tr>
+    <td>高版本 → 低版本（回退）</td>
+    <td>❌ .blend 单向升级，原理上不可逆</td>
+    <td>❌ 同样不可逆（仅 ⑤⑥ 文本/数据可回退）</td>
+    <td><span class="tag bad">不可达成</span></td>
+  </tr>
+</table>
+
+<h2 class="sec">五、落地建议：分层迁移架构</h2>
+
+<p>放弃「一个 zip 解决一切」，在现有 pack.py 的 manifest.json 基础上扩展为<b>三分层导出 + 导入侧校验</b>：</p>
+
+<div class="flow">
+  <div class="step">导出：按层分类打包</div><div class="arrow">➡</div>
+  <div class="step">manifest 标注每层版本策略</div><div class="arrow">➡</div>
+  <div class="step">导入：探测目标版本</div><div class="arrow">➡</div>
+  <div class="step">同版本→整还原 / 跨版本→分层应用</div><div class="arrow">➡</div>
+  <div class="step">校验报告 + 待办清单</div>
+</div>
+
+<div class="card">
+<h3 style="margin-top:0">导入侧的三档策略</h3>
+<table>
+  <tr><th>层</th><th>同版本导入</th><th>跨版本导入策略</th></tr>
+  <tr><td>①② userpref/startup.blend</td><td>直接还原</td><td>拷贝到目标版本 config，<b>由 Blender 首次启动的内核 do_versions 自行升级</b>；升级后提示用户检查 UI/快捷键；startup.blend 跨大版本可选跳过（用目标默认 + 只迁移工作区截图备忘）</td></tr>
+  <tr><td>③④ addons/extensions</td><td>直接还原</td><td><b>不拷贝代码</b>，导出「插件清单（名称/版本/来源/启用状态）」；导入时按目标版本从 extensions 仓库或本地 zip 重装，生成重装结果报告</td></tr>
+  <tr><td>⑤⑥ presets/datafiles/文本配置</td><td>直接还原</td><td>直接还原（唯一附加处理：书签/路径中的绝对路径做机器名/盘符重映射）</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h3 style="margin-top:0">必须内置的防护（来自社区踩坑）</h3>
+<ul class="tight">
+  <li><b>导入前清空目标版本 config 中已存在的 userpref.blend</b>——否则官方导入机制静默跳过（issue #142145）；</li>
+  <li><b>目标版本已存在数据时强制生成回滚备份</b>（官方开发者建议「nuke 后从零导入」的前提是有备份）；</li>
+  <li><b>manifest.json 记录源 Blender 版本</b>（pack.py 已有 blender_version 字段，基础已就位）；</li>
+  <li><b>导入后输出差异报告</b>：哪些插件未能重装、哪些预设路径失效、哪些偏好需要人工核对——「可检测的失败」远好于「静默的错误」；</li>
+  <li><b>明确拒绝高版本→低版本回退</b>，UI 直接拦截并解释原因，避免用户制造不可恢复的损坏。</li>
+</ul>
+</div>
+
+<h2 class="sec">六、结论评分</h2>
+
+<div class="card" style="display:flex;gap:36px;align-items:center;flex-wrap:wrap">
+  <div>
+    <div class="conclusion-num">90<span style="font-size:22px">分</span></div>
+    <div style="color:var(--ink2);font-size:14px">工程级跨版本迁移目标可达性</div>
+  </div>
+  <div style="flex:1;min-width:320px">
+    <ul class="tight">
+      <li>✅ <b>同版本迁移</b>：现状即 100%，保持整包方案；</li>
+      <li>✅ <b>跨版本迁移（4.2+ 时代内）</b>：分层架构后可做到「偏好正确升级 + 数据完整 + 插件清单化重装」，满足「不同版本下正确无误」的工程定义——所有失败项均可检测、可回滚、有报告；</li>
+      <li>⚠️ <b>跨 4.2 断裂点 / 跨大版本</b>：插件层只能「清单 + 重装」，无法保证旧代码在新版本可运行，正确性上限取决于插件生态；</li>
+      <li>❌ <b>版本回退</b>：原理不可行，应在产品层面明确定义为不支持；</li>
+      <li>❌ <b>「无缝到用户无感知」</b>：不现实，官方自身都做不到；诚实的目标是「无缝到 5 分钟内按报告点完确认」。</li>
+    </ul>
+  </div>
+</div>
+
+<footer>
+  <b>主要数据来源：</b>
+  Blender 官方 Directory Layout 手册（4.4 / 5.1 / 5.3）；
+  blender/blender issues #142145、#121917、#77813、#124020；
+  extensions/ant_landscape issue #2；
+  devtalk.blender.org「Changes to Add-on and Themes Bundling (4.2 onwards)」讨论串；
+  blender.stackexchange.com #8570、#321754；
+  filepathgeek.com / cookstation.blog 第三方配置路径指南。
+  <br><b>项目上下文：</b>MMY-Blender-Configure / pack.py（manifest.json 已含 blender_version 字段，分层迁移架构可在此之上增量扩展）。
+</footer>
+
+</div>
+</body>
+</html>
