@@ -44,6 +44,12 @@ PACK_STAGES: list[tuple[str, str]] = [
     ("compress", "压缩写入 zip"),
 ]
 
+EXPORT_STAGES: list[tuple[str, str]] = [
+    ("launch", "启动源 Blender（后台）"),
+    ("collect", "收集配置内容"),
+    ("write", "写入迁移配置包"),
+]
+
 
 # ============================================================
 # 标签页 1：配置迁移
@@ -292,6 +298,16 @@ class PackPage:
 
         files = gk.ttk.LabelFrame(outer, text=" ① 选择要打包的文件夹 ", padding=10)
         files.pack(fill="x")
+        gk.ttk.Label(
+            files,
+            text="⚠ 这是整目录备份包，只能用于备份或同版本覆盖解压，"
+            "不能跨版本迁移（体积含大量缓存）。\n"
+            "   需要跨版本迁移请用「导出迁移包」页。",
+            font=(gk.FONT_FAMILY, gk.FONT_SIZE),
+            foreground=gk.COLOR_ERROR,
+            wraplength=860,
+            justify="left",
+        ).pack(anchor="w", fill="x", pady=(0, 8))
         self.zone = gk.DropZone(
             files,
             title="Blender portable 文件夹",
@@ -440,12 +456,256 @@ class PackPage:
 
 
 # ============================================================
+# 标签页 3：导出迁移包
+# ============================================================
+
+
+class ExportPage:
+    """导出迁移包标签页：portable 文件夹 + 源 blender.exe → 迁移包。
+
+    与「配置打包」的区别必须说清楚，否则小白会把备份包拖去迁移：
+
+    - 配置打包 = 整目录备份，只能同版本覆盖解压
+    - 本页 = 迁移包，逐组件挑选 + 带校验清单，可跨版本导入
+    """
+
+    COMPONENT_ROWS = [
+        ("presets", "预设（scripts/presets）", "键位预设、材质模板，纯数据，跨版本安全", True),
+        ("datafiles", "数据文件（datafiles）", "贴图、HDRI、matcap，纯数据，跨版本安全", True),
+        ("startup_scripts", "启动脚本（scripts/startup）", "启动时执行的代码，依赖旧版 API 可能报错", True),
+        ("app_templates", "应用模板", "自定义应用模板，纯数据", True),
+        ("history", "最近访问记录", "文件路径历史，换机器后基本无用", False),
+    ]
+
+    def __init__(self, parent, root, scroll: gk.ScrollPane) -> None:
+        self.root = root
+        self.scroll = scroll
+        self.outer = parent
+        self.output_dir: str = ""
+        self._current_stage = "launch"
+        self._busy = False
+        self._build_ui()
+        self.runner = gk.TaskRunner(
+            root,
+            on_stage=self._on_stage,
+            on_log=self.log.append,
+            on_done=self._on_done,
+            on_error=self._on_error,
+        )
+
+    def _build_ui(self) -> None:
+        outer = self.outer
+
+        tip = gk.ttk.LabelFrame(outer, text=" ① 选择源 Blender ", padding=10)
+        tip.pack(fill="x")
+        row = gk.ttk.Frame(tip)
+        row.pack(fill="x")
+        self.zone_portable = gk.DropZone(
+            row,
+            title="旧版 portable 文件夹",
+            hint="拖入 blender.exe 同级的 portable 文件夹",
+            on_path=self._on_portable,
+            want_directory=True,
+        )
+        self.zone_portable.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        self.zone_exe = gk.DropZone(
+            row,
+            title="旧版 blender.exe（可选）",
+            hint="不拖则自动找同级",
+            on_path=self._on_exe,
+            file_types=[("Blender 可执行文件", "blender.exe"), ("所有文件", "*.*")],
+        )
+        self.zone_exe.pack(side="left", fill="both", expand=True)
+
+        comps = gk.ttk.LabelFrame(outer, text=" ② 要带走的内容 ", padding=10)
+        comps.pack(fill="x", pady=(10, 0))
+        gk.ttk.Label(
+            comps,
+            text="迁移包只挑这些组件，能大幅减小体积并避开缓存文件。",
+            font=(gk.FONT_FAMILY, gk.FONT_SIZE),
+            foreground=gk.COLOR_MUTED,
+            wraplength=860,
+            justify="left",
+        ).pack(anchor="w")
+        self.var_components: dict[str, gk.tk.BooleanVar] = {}
+        grid = gk.ttk.Frame(comps)
+        grid.pack(fill="x", pady=(6, 0))
+        for index, (key, label, hint, default) in enumerate(self.COMPONENT_ROWS):
+            var = gk.tk.BooleanVar(value=default)
+            self.var_components[key] = var
+            cell = gk.ttk.Frame(grid)
+            cell.grid(row=index // 2, column=index % 2, sticky="w", pady=2, padx=(0, 12))
+            gk.ttk.Checkbutton(cell, text=label, variable=var).pack(anchor="w")
+            gk.ttk.Label(
+                cell, text=hint, font=(gk.FONT_FAMILY, 9), foreground=gk.COLOR_MUTED
+            ).pack(anchor="w")
+
+        output = gk.ttk.LabelFrame(outer, text=" ③ 输出位置 ", padding=10)
+        output.pack(fill="x", pady=(10, 0))
+        gk.ttk.Button(
+            output, text="选择输出文件夹…", command=self._on_pick_output, width=20
+        ).pack(anchor="w")
+        self.output_label = gk.ttk.Label(
+            output,
+            text="（默认为桌面，导出时自动生成文件名）",
+            font=(gk.FONT_FAMILY, gk.FONT_SIZE),
+            foreground=gk.COLOR_MUTED,
+            wraplength=840,
+            justify="left",
+        )
+        self.output_label.pack(anchor="w", fill="x", pady=(6, 0))
+        self.btn_start = gk.ttk.Button(
+            output, text="开始导出迁移包", command=self._on_start, state="disabled", width=18
+        )
+        self.btn_start.pack(anchor="w", pady=(10, 0))
+
+        progress = gk.ttk.LabelFrame(outer, text=" ④ 进度 ", padding=10)
+        progress.pack(fill="both", expand=True, pady=(10, 0))
+        self.stages = gk.StageProgress(progress, EXPORT_STAGES)
+        self.stages.pack(anchor="w", fill="x", pady=(0, 8))
+        self.log = gk.LogPanel(progress, height=8)
+        self.log.pack(fill="both", expand=True)
+
+        self.result = gk.ResultCard(outer)
+        self.result.pack(fill="x")
+
+    # ---------------------------------------------------------- 事件
+
+    def _on_portable(self, path: str) -> None:
+        self.zone_portable.set_path(path)
+        self.result.clear()
+        self.stages.reset()
+        self.btn_start.configure(state="normal")
+        # 只拖了 portable 时，尝试自动定位同级 blender.exe 省一次拖拽
+        if not self.zone_exe.path:
+            try:
+                found = cli.source_executable_from_portable(path)
+            except cli.MigrateInputError:
+                return
+            self.zone_exe.set_path(found)
+            self.log.append(f"已自动找到源 Blender：{found}")
+        if not self.output_dir:
+            self._suggest_output(str(Path.home() / "Desktop"))
+
+    def _on_exe(self, path: str) -> None:
+        self.zone_exe.set_path(path)
+        self.result.clear()
+        self.stages.reset()
+        self.btn_start.configure(state="normal")
+        # 反向补全：只拖了 exe 时，同级 portable/ 也能自动填上
+        if not self.zone_portable.path:
+            candidate = Path(path).parent / "portable"
+            if candidate.is_dir():
+                self.zone_portable.set_path(str(candidate))
+                self.log.append(f"已自动找到 portable 文件夹：{candidate}")
+
+    def _on_pick_output(self) -> None:
+        chosen = gk.filedialog.askdirectory(title="选择输出文件夹")
+        if chosen:
+            self._suggest_output(chosen)
+
+    def _suggest_output(self, path: str) -> None:
+        self.output_dir = path
+        self.output_label.configure(text=path, foreground=gk.COLOR_PRIMARY)
+
+    def _on_start(self) -> None:
+        portable = self.zone_portable.path
+        if not portable:
+            return
+        self.result.clear()
+        self.stages.reset()
+        self.log.append("── 开始导出迁移包 ──")
+
+        def work(stage, log):
+            exe = self.zone_exe.path
+            if not exe:
+                exe = cli.source_executable_from_portable(portable)
+                log(f"自动定位源 Blender：{exe}")
+            log("校验源目录…")
+            info = cli.validate_source_blender(portable, exe)
+            log(f"源用户目录：{info['user_root']}")
+            log(f"磁盘上的组件：{'、'.join(info['components_on_disk'])}")
+            if cli.core_is_running(exe):
+                log("⚠ 检测到该 Blender 正在运行：")
+                log("   配置导出的是磁盘上已保存的偏好设置，")
+                log("   若刚改过偏好还没保存，请先在 Blender 里保存。")
+            components = {k: bool(v.get()) for k, v in self.var_components.items()}
+            return cli.run_source_export(
+                portable,
+                exe,
+                self.output_dir or str(Path.home() / "Desktop"),
+                components=components,
+                progress=stage,
+            )
+
+        self.runner.start(work)
+
+    # ---------------------------------------------------------- 回调
+
+    def _on_stage(self, key: str, message: str, ratio: float | None) -> None:
+        self._current_stage = key
+        self.stages.set_stage(key, message or "", ratio)
+
+    def _on_done(self, report: dict) -> None:
+        path = Path(report.get("profile_path", ""))
+        size_mb = (report.get("size_bytes") or 0) / 1024 / 1024
+        self.stages.set_stage("write", "")
+        details = [
+            ("输出文件", str(path)),
+            ("文件大小", f"{size_mb:.1f} MB"),
+            ("包含组件", "、".join(report.get("components") or [])),
+            ("文件数", str(report.get("file_count", 0))),
+        ]
+        warnings = report.get("warnings") or []
+        actions = [
+            ("打开所在文件夹", lambda: gk.open_in_explorer(path.parent)),
+            ("重新导出", self._restart),
+        ]
+        self.result.show(
+            ok=True,
+            title="迁移包导出完成",
+            details=details,
+            message=(
+                "这个包可以拖到「配置迁移」页导入目标 Blender。\n"
+                + ("\n注意：" + "\n".join(warnings) if warnings else "")
+            ),
+            actions=actions,
+            notify=True,
+        )
+
+    def _on_error(self, exc: BaseException) -> None:
+        self.stages.mark_failed(self._current_stage)
+        self.btn_start.configure(state="normal")
+        self.result.show(
+            ok=False,
+            title="导出失败",
+            message=gk.explain_error(exc),
+            notify=True,
+        )
+
+    def _restart(self) -> None:
+        self.result.clear()
+        self.stages.reset()
+        self.log.clear()
+
+    def is_running(self) -> bool:
+        return self.runner.is_running
+
+    def confirm_close(self) -> bool:
+        if not self.runner.is_running:
+            return True
+        return gk.messagebox.askyesno(
+            "导出进行中", "源 Blender 还在后台跑，关闭可能留下半个配置包。确定吗？"
+        )
+
+
+# ============================================================
 # 主窗口
 # ============================================================
 
 
 class ToolApp:
-    """双标签页主窗口。每个标签页自带独立滚动容器与任务线程。"""
+    """三标签页主窗口。每个标签页自带独立滚动容器与任务线程。"""
 
     def __init__(self, root) -> None:
         self.root = root
@@ -455,18 +715,22 @@ class ToolApp:
             header,
             "MMY Blender 配置工具",
             "迁移：把旧版配置迁到新的 Blender（目标机器无需装插件）。"
-            "打包：把 portable 配置文件夹打成 zip，用于备份或同版本拷贝。",
+            "打包：把 portable 配置文件夹打成 zip，用于备份或同版本拷贝。"
+            "导出：把旧版配置做成可跨版本导入的迁移包。",
         )
 
         self.notebook = gk.ttk.Notebook(root)
         self.notebook.pack(fill="both", expand=True, padx=10, pady=(8, 10))
 
         self.migrate_scroll = gk.ScrollPane(self.notebook)
+        self.export_scroll = gk.ScrollPane(self.notebook)
         self.pack_scroll = gk.ScrollPane(self.notebook)
         self.notebook.add(self.migrate_scroll, text="  配置迁移  ")
+        self.notebook.add(self.export_scroll, text="  导出迁移包  ")
         self.notebook.add(self.pack_scroll, text="  配置打包  ")
 
         self.migrate_page = MigratePage(self.migrate_scroll.body, root, self.migrate_scroll)
+        self.export_page = ExportPage(self.export_scroll.body, root, self.export_scroll)
         self.pack_page = PackPage(self.pack_scroll.body, root)
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_switch, add="bind")
 
@@ -475,21 +739,19 @@ class ToolApp:
     def _on_tab_switch(self, _event=None) -> None:
         """切标签时刷新滚动区域尺寸，否则新页面的滚动条范围是算错的。"""
         self.notebook.update_idletasks()
-        current = self.notebook.select()
-        if current == str(self.migrate_scroll):
-            self.migrate_scroll.body.update_idletasks()
-        elif current == str(self.pack_scroll):
-            self.pack_scroll.body.update_idletasks()
+        for scroll in (self.migrate_scroll, self.export_scroll, self.pack_scroll):
+            if self.notebook.select() == str(scroll):
+                scroll.body.update_idletasks()
 
     def _on_close(self) -> None:
-        for page in (self.migrate_page, self.pack_page):
+        for page in (self.migrate_page, self.export_page, self.pack_page):
             if not page.confirm_close():
                 return
         self.root.destroy()
 
 
 def main() -> int:
-    root = gk.make_root("MMY Blender 配置工具 — 迁移 / 打包")
+    root = gk.make_root("MMY Blender 配置工具 — 迁移 / 导出 / 打包")
     ToolApp(root)
     root.mainloop()
     return 0

@@ -25,6 +25,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent
 ADDON_DIR = REPO_ROOT / "mmy_pack_config"
 WORKER_SCRIPT = ADDON_DIR / "migration_worker.py"
+EXPORT_WORKER_SCRIPT = ADDON_DIR / "export_worker.py"
 
 # 与 migration_core.SCHEMA_VERSION 对齐的配置包格式版本
 PROFILE_SCHEMA_VERSION = 2
@@ -338,6 +339,256 @@ def run_migration(
         "user_root": (preflight or {}).get("user_root", ""),
         "manifest": manifest,
     }
+
+
+# ============================================================
+# 导出侧：在源 Blender 后台跑一次快照，产出迁移配置包
+# ============================================================
+
+
+def source_executable_from_portable(portable_path) -> str:
+    """从 portable 文件夹推出同级的 blender.exe。
+
+    portable/ 的约定是「exe 同级放一个名为 portable 的文件夹」，
+    所以 exe 固定在 portable 的上两级。用户只需拖 portable 文件夹，
+    拖 blender.exe 也行（GUI 两个投放区都支持）。
+    """
+    folder = Path(portable_path)
+    if not folder.is_dir():
+        raise MigrateInputError(f"portable 文件夹不存在：{folder}")
+    if folder.name.lower() != "portable":
+        raise MigrateInputError(
+            f"这看起来不是 Blender 的 portable 文件夹：\n"
+            f"  {folder}\n\n"
+            f"请拖入 blender.exe 同级、名为 portable 的那个文件夹。\n"
+            f"（当前文件夹名为「{folder.name}」）"
+        )
+    candidate = folder.parent / "blender.exe"
+    if not candidate.is_file():
+        raise MigrateInputError(
+            f"在 {folder.parent} 下没有找到 blender.exe。\n"
+            f"请确认拖入的是便携版 Blender 的 portable 文件夹。"
+        )
+    return str(candidate)
+
+
+def validate_source_blender(portable_path, executable_path) -> dict:
+    """校验源 Blender 与 portable 文件夹可用，返回展示信息（只读，不启动）。"""
+    folder = Path(portable_path)
+    if not folder.is_dir():
+        raise MigrateInputError(f"portable 文件夹不存在：{folder}")
+    config_dir = folder / "config"
+    userpref = config_dir / "userpref.blend"
+    info = {
+        "user_root": str(folder.resolve(strict=False)),
+        "has_userpref": userpref.is_file(),
+        "components_on_disk": [
+            name
+            for name, sub in (
+                ("config", config_dir),
+                ("scripts", folder / "scripts"),
+                ("datafiles", folder / "datafiles"),
+                ("extensions", folder / "extensions"),
+            )
+            if sub.is_dir()
+        ],
+    }
+    if executable_path:
+        exe = Path(executable_path)
+        if not exe.is_file():
+            raise MigrateInputError(f"源 Blender 不存在：{exe}")
+        if exe.name.lower() != "blender.exe":
+            raise MigrateInputError(
+                f"源 Blender 文件名不对：{exe.name}（应为 blender.exe）"
+            )
+        # 便携版判定：exe 同级必须有 portable 目录，否则该 Blender 的配置
+        # 写在 %APPDATA%，拖入的 portable 文件夹对它没有意义
+        if not (exe.parent / "portable").is_dir():
+            raise MigrateInputError(
+                f"{exe.name} 同级没有 portable 文件夹，它不是便携版。\n\n"
+                f"便携版的约定是：blender.exe 同级放一个名为 portable 的文件夹，"
+                f"配置才会写在 Blender 目录内。\n"
+                f"当前 {exe.parent} 下没有该文件夹。"
+            )
+        info["executable"] = str(exe.resolve(strict=False))
+        info["binary_dir"] = str(exe.parent.resolve(strict=False))
+    if not info["has_userpref"]:
+        raise MigrateInputError(
+            f"portable 文件夹里没有 config/userpref.blend：\n  {userpref}\n\n"
+            f"这个 Blender 从未保存过偏好设置（或不是它的配置目录）。\n"
+            f"请先打开一次该 Blender 并保存偏好，再回来导出。"
+        )
+    return info
+
+
+def core_is_running(executable_path) -> bool:
+    """源 Blender 是否正在运行（仅检测，不阻断）。
+
+    运行中导出拿到的是磁盘上**已保存**的偏好，不是用户眼前的当前状态。
+    不阻断是因为多数情况磁盘版本就是用户想要的；只在日志里提醒，
+    让用户自己判断刚改的偏好有没有保存。
+    """
+    try:
+        core = load_migration_core()
+        return bool(core.windows_executable_is_running(Path(executable_path)))
+    except Exception:  # noqa: BLE001 —— 检测失败不该影响导出
+        return False
+
+
+def run_source_export(
+    portable_path,
+    executable_path,
+    output_dir,
+    components: dict | None = None,
+    progress=None,
+    timeout: int = 900,
+) -> dict:
+    """后台启动源 Blender 生成迁移配置包，返回 worker 报告。
+
+    与 ``run_migration`` 对称：那边把包**装进**目标 Blender，这边从源
+    Blender **导出**包。两者都靠 ``blender --background --python`` 注入
+    脚本，不要求用户装过本插件。
+
+    ``progress`` 为可选阶段回调 (stage_key, message, ratio)。
+    """
+    core = load_migration_core()
+    portable = Path(portable_path)
+    target_exe = Path(executable_path)
+    if not target_exe.is_file():
+        raise MigrateInputError(f"源 Blender 不存在：{target_exe}")
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    report_path = output / "mmy_export_report.json"
+    if report_path.exists():
+        report_path.unlink()
+
+    options = {
+        "presets": True,
+        "datafiles": True,
+        "startup_scripts": True,
+        "app_templates": True,
+        "history": False,
+    }
+    if components:
+        options.update({k: bool(v) for k, v in components.items() if k in options})
+
+    worker = EXPORT_WORKER_SCRIPT
+    if not worker.is_file():
+        raise MigrateInputError(
+            f"缺少导出执行文件：{worker}\n"
+            f"请从完整仓库运行本工具（mmy_pack_config/ 必须随脚本一起）。"
+        )
+
+    command = [
+        str(target_exe),
+        "--background",
+        # 不加 --factory-startup：必须加载用户真实偏好，否则导出一份空配置
+        "--python-exit-code",
+        "7",
+        "--python",
+        str(worker),
+        "--",
+        str(portable.resolve(strict=False)),
+        str(output.resolve(strict=False)),
+        str(report_path.resolve(strict=False)),
+        json.dumps(options, ensure_ascii=False),
+    ]
+
+    def _emit(stage: str, message: str, ratio=None) -> None:
+        if progress is None:
+            return
+        try:
+            progress(stage, message, ratio)
+        except Exception:  # noqa: BLE001 —— 回调异常绝不打断导出
+            pass
+
+    _emit("launch", f"启动 {target_exe.name}（后台模式，约需十几秒）…", 0.0)
+    creationflags = getattr(core.subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    environment = core._blender_subprocess_env()
+    try:
+        completed = core.subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            creationflags=creationflags,
+            check=False,
+            env=environment,
+        )
+    except core.subprocess.TimeoutExpired as exc:
+        raise MigrateInputError(
+            f"源 Blender 后台导出超时（超过 {timeout} 秒）。\n"
+            f"如果 Blender 弹出过「是否信任」之类的窗口，请先处理好再试。"
+        ) from exc
+
+    _emit("collect", "收集配置内容…", 0.6)
+    if not report_path.is_file():
+        combined = f"{completed.stdout}\n{completed.stderr}"
+        tail = "\n".join(
+            line for line in combined.splitlines() if line.strip()
+        )[-6:]
+        raise MigrateInputError(
+            f"源 Blender 没有产出报告（退出码 {completed.returncode}）。\n"
+            f"最后几行输出：\n{tail[:600]}"
+        )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    # 报告已拿到即可清理，避免输出目录里留下临时文件
+    try:
+        report_path.unlink()
+    except OSError:
+        pass
+
+    if report.get("status") != "success":
+        raise MigrateInputError(str(report.get("error") or "源 Blender 导出失败"))
+    _emit("write", f"完成：{Path(report['profile_path']).name}", 1.0)
+    return report
+
+
+def describe_export_report(report: dict) -> str:
+    """把 worker 报告渲染成确认区文本（含组件清单与警告）。"""
+    components = report.get("components") or []
+    friendly = {
+        "preferences": "偏好设置 userpref.blend",
+        "startup_file": "启动文件 startup.blend",
+        "addons": "插件（scripts/addons）",
+        "extensions": "扩展（extensions）",
+        "presets": "预设 scripts/presets",
+        "datafiles": "数据文件 datafiles",
+        "startup_scripts": "启动脚本 scripts/startup",
+        "app_templates": "应用模板 bl_app_templates_user",
+        "history": "最近访问记录",
+        "workspaces": "工作区清单",
+        "keymap_fallback": "快捷键（keymap.py）",
+    }
+    lines = [
+        f"将导出迁移配置包（{len(components)} 类组件）：",
+        "",
+    ]
+    for key in components:
+        lines.append(f"  · {friendly.get(key, key)}")
+    lines += [
+        "",
+        f"  源版本：Blender {version_string(report.get('source_version') or [])}",
+        f"  文件数：{report.get('file_count', 0)} 个",
+        f"  输出到：{report.get('profile_path', '')}",
+    ]
+    for note in report.get("notes") or []:
+        lines.append(f"  · {note}")
+    warnings = report.get("warnings") or []
+    if warnings:
+        lines += ["", "注意："]
+        for item in warnings:
+            lines.append(f"  ! {item}")
+    lines += [
+        "",
+        "该包可拖入「配置迁移」页导入到目标 Blender。",
+        "导出过程会启动一次源 Blender（后台模式，不会弹出界面）。",
+    ]
+    return "\n".join(lines)
 
 
 def format_result_summary(info: dict) -> str:

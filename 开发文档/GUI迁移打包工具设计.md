@@ -357,3 +357,110 @@ drop 数据当词列表处理——路径含空格会断成两截，含反斜杠
 
 **注意**：不能用 `event generate -data <路径>` 来模拟——那会再过一层
 Tcl 解析，把路径里的反斜杠吃掉，测出来的是构造错误而非产品行为。
+---
+
+## 12. v1.6.0：GUI 直接产出迁移包（导出页）
+
+### 12.1 起因
+
+实测发现插件「一键导出」的产物与 GUI「配置打包」的产物**同名不同物**，
+用户很容易把备份包拖去迁移而失败：
+
+| | GUI 配置打包 | 插件一键导出 | GUI 导出迁移包（v1.6.0） |
+|---|---|---|---|
+| 文件名前缀 | `MMY_Backup_Portable` | `MMY_Backup_Profile` | `MMY_Backup_Profile` |
+| schema_version | 1 | 2 | 2 |
+| 内部结构 | `portable/config/…` | `payload/config/…` | `payload/config/…` |
+| 实测体积 | 375.6 MB | 103.2 MB | 103.9 MB |
+| 逐文件 sha256 | 无 | 有 | 有 |
+| 能否跨版本迁移 | **否** | 是 | 是 |
+| 是否需要装插件 | 不需要 | **需要** | 不需要 |
+
+v1.6.0 之前只有中间一列能用，且要求用户在旧版 Blender 里装插件、注册成功、
+才能点导出——这与「目标机器无需装插件」的整体设计目标在**导出端**留下了缺口。
+本节把导出也搬进GUI：拖入旧版 portable 文件夹即可出包。
+
+### 12.2 关键设计：采集层从插件里剥出来
+
+原来三个采集函数（插件清单 / 快捷键指纹 / 工作区清单）住在 `migration.py`，
+只在 Operator 里被调用，于是**导出必须先装插件**。抽出为独立的
+`collectors.py`：依赖 `bpy` 但**不依赖插件注册**，且用 try/except 同时兼容
+两种导入上下文：
+
+```python
+try:#### 包内（插件注册）
+    from .migration_core import FACTORY_WORKSPACE_NAMES
+except ImportError:      # 独立脚本（blender --background --python）
+    from migration_core import FACTORY_WORKSPACE_NAMES
+```
+
+`migration.py` 保留同名薄壳转调，**对外 API 与既有测试完全不变**。
+
+### 12.3 链路：export_worker.py
+
+```
+GUI「导出迁移包」页
+  └─ migrate.run_source_export()          宿主端（纯 Python）
+       ├─ validate_source_blender()       纯本地校验，不启动进程
+       ├─ core_is_running()               运行中只警告不阻断
+       └─ subprocess: blender.exe --background
+              --python export_worker.py -- <user_root> <output> <report> <opts>
+                                    │
+                                    ├─ _resolve_user_root()   ★防拖错
+                                    ├─ save_userpref()        落盘最新偏好
+                                    ├─ keyconfig_export()     → fallback/keymap.py
+                                    ├─ collectors.*x3()       指纹/工作区/插件
+                                    ├─ create_profile()       纯 Python，在 Blender 内直接调
+                                    └─ _write_report()        成功失败都写 JSON
+```
+
+与目标端`migration_worker.py` 严格对称：那边校验「目标 user_root 与预期
+一致」，这边校验「源 user_root 与拖入的 portable 一致」。桌面上有多个
+Blender 时，这是唯一能拦住「导出 5.1 的包却拖给 5.2 的 exe」的机制。
+
+**不加 `--factory-startup`**：必须加载用户真实偏好，否则导出一份空配置。
+
+### 12.4 已知限制（如实告知，不静默降级）
+
+**后台模式采不到快捷键差异指纹**。Blender 后台不物化默认键位——实测 5.1
+后台 `keyconfigs.default` 仅 12 条（GUI 模式数千条），差异项无法与默认表
+比对，`collect_keymap_fingerprint()` 返回 `skipped`。后果：
+
+- 快捷键**本体**仍完整导入（`fallback/keymap.py`，实测 11978 字节）
+- 但导入时的「快捷键丢失审计」降级为不比对
+- 报告与 GUI 结果卡片都明确写出这条警告
+
+需要完整审计时，仍可在源 Blender 里点插件的「一键导出」（GUI 模式采集）。
+
+### 12.5 顺带修好的根因
+
+**datafiles 漏打**。上一版把偏好默认值改成 `True`，但 Blender 的
+`BoolProperty` 一旦被`userpref.blend` 存过值，**userpref 里的旧值优先于代码
+里的 `default=`**——实测 `RESULT {"datafiles": false, "startup_scripts": false,
+"app_templates": true}`：`app_templates` 变成 true 是因为用户从没碰过它，
+userpref 里没存旧值。改代码默认值对它无效。
+
+v1.6.0 绕开整个问题：导出走 GUI，**组件开关由 GUI 上的复选框决定**，
+不再读 Blender 偏好，自然没有「旧值残留」这回事。实测新包 10 类组件齐全，
+`payload/datafiles` 11 个matcap 全部在内，`missing_folder_components()` 返回「无」。
+
+同时给「配置打包」页加了红色警示：这是整目录备份包（含大量缓存，
+375 MB），只能备份/同版本覆盖解压，跨版本迁移请用「导出迁移包」页。
+
+### 12.6 测试
+
+`tests/smoke_gui.py` 增至 18 项，新增 6 项导出页契约：
+
+- 从 portable 推导 blender.exe
+- 源目录校验通过
+- 拒绝非 portable 目录（用户拖了Blender 根目录）
+- 拒绝缺 `userpref.blend` 的目录（全新Blender 从未保存过偏好）
+- 拒绝非便携版 Blender（exe 同级无 `portable/` → 配置在 `%APPDATA%`）
+- 报告渲染含组件中文名 / 警告逐字透传 / 版本前缀 / 可迁移指引
+
+> 报告断言刻意**不断言单个中文词**（改个措辞就红），改为断言语义要素，
+> 并把每项结果打进 note 里便于定位。
+
+真实链路验证（5.1 → 5.2，本机实跑）：导出 103.9 MB / 5444 文件 →
+`validate_profile` 通过 → `preflight_target` 通过 → `missing_folder_components`
+返回「无」→ 自迁移防护识别出 `C:\BlenderAPP\Blender5.1\portable`。
