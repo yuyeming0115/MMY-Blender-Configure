@@ -106,6 +106,27 @@ class DetectTargetVersionTests(unittest.TestCase):
         self.assertIsNone(migrate.detect_target_version(r"C:\tools\blender.exe"))
 
 
+class PortableDetectionTests(unittest.TestCase):
+    def test_exe_sibling_portable_is_portable(self):
+        self.assertTrue(
+            migrate.is_portable_user_root(
+                r"C:\BlenderAPP\Blender5.2\portable",
+                r"C:\BlenderAPP\Blender5.2\blender.exe",
+            )
+        )
+
+    def test_appdata_user_root_is_not_portable(self):
+        self.assertFalse(
+            migrate.is_portable_user_root(
+                r"C:\Users\EDY\AppData\Roaming\Blender Foundation\Blender\5.2",
+                r"C:\BlenderAPP\Blender5.2\blender.exe",
+            )
+        )
+
+    def test_empty_user_root_is_not_portable(self):
+        self.assertFalse(migrate.is_portable_user_root("", r"C:\x\blender.exe"))
+
+
 class DescribeProfileTests(unittest.TestCase):
     def test_summary_contains_key_info(self):
         manifest = {
@@ -119,6 +140,60 @@ class DescribeProfileTests(unittest.TestCase):
         self.assertIn("1 个", text)  # 只有 1 个已启用插件
         self.assertIn("2 个", text)  # 2 个自定义工作区
         self.assertIn("来源 Blender", text)  # 自我迁移提示
+
+    def test_preflight_summary_shows_real_paths(self):
+        manifest = {
+            "source": {"blender_version": [5, 1, 0], "platform": "win32"},
+            "addons": [{"name": "a", "enabled": True}],
+            "workspaces": {"count": 3, "custom_count": 2},
+        }
+        preflight = {
+            "version": "5.2",
+            "user_root": r"C:\BlenderAPP\Blender5.2\portable",
+            "portable": True,
+            "incompatible": [],
+        }
+        text = migrate.describe_profile(
+            manifest, r"C:\BlenderAPP\Blender5.2\blender.exe", None, preflight
+        )
+        self.assertIn("实测", text)
+        self.assertIn(r"C:\BlenderAPP\Blender5.2\portable", text)
+        self.assertNotIn("未启用便携模式", text)
+
+    def test_preflight_warns_when_not_portable(self):
+        manifest = {
+            "source": {"blender_version": [5, 1, 0], "platform": "win32"},
+            "addons": [],
+        }
+        preflight = {
+            "version": "5.2",
+            "user_root": r"C:\Users\EDY\AppData\Roaming\Blender Foundation\Blender\5.2",
+            "portable": False,
+            "incompatible": [],
+        }
+        text = migrate.describe_profile(
+            manifest, r"C:\BlenderAPP\Blender5.2\blender.exe", None, preflight
+        )
+        self.assertIn("未启用便携模式", text)
+        self.assertIn("新建名为 portable 的文件夹", text)
+        self.assertIn("AppData", text)
+
+    def test_preflight_lists_incompatible_addons(self):
+        manifest = {
+            "source": {"blender_version": [5, 1, 0], "platform": "win32"},
+            "addons": [],
+        }
+        preflight = {
+            "version": "5.2",
+            "user_root": r"C:\BlenderAPP\Blender5.2\portable",
+            "portable": True,
+            "incompatible": [{"name": "BoxCutter", "module": "boxcutter"}],
+        }
+        text = migrate.describe_profile(
+            manifest, r"C:\BlenderAPP\Blender5.2\blender.exe", None, preflight
+        )
+        self.assertIn("不兼容插件", text)
+        self.assertIn("BoxCutter", text)
 
 
 if __name__ == "__main__":

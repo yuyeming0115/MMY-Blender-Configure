@@ -41,8 +41,24 @@ v1.4 迁移体系的执行链（`migration_core.execute_existing_profile_migrati
 | 图形模式 | `python migrate.py`（双击） | 目标机器零命令行经验 |
 | 命令行模式 | `python migrate.py <profile.zip> <blender.exe>` | 脚本化/CI |
 
-图形模式流程：选配置包 → 选 blender.exe → 确认摘要弹窗（源版本/目标版本/
-自定义工作区数/启动文件策略）→ 执行 → 结果弹窗（含报告路径）。
+图形模式流程：选配置包 → 选 blender.exe → **后台探针预检** → 确认摘要弹窗
+（实测版本/实测配置目录/便携模式检测/预计不兼容插件数/自定义工作区数）→ 执行 →
+结果弹窗（含配置写入路径、报告路径、回滚路径）。
+
+### 2.3.1 预检（preflight_target）
+
+迁移前启动一次目标 Blender 后台探针，拿到**实测**信息（不靠目录名猜）：
+
+- 真实版本 → 版本策略（同主版本 + 向前-only）提前拦截，避免走完流程才失败
+- 真实 `user_root` → **便携模式检测**：`user_root` 是否等于 exe 同级 `portable/`
+- 目标是否正在运行（提前提示关闭）
+- 按 manifest 预测不兼容插件（确认页列名）
+
+**便携模式检测是全新便携版场景的头号坑**：Blender 官方判定条件是
+「exe 所在目录存在名为 `portable` 的文件夹」。全新解压的官方 zip 没有该目录，
+此时迁移会"成功"但配置写进 `%APPDATA%\Blender Foundation\Blender\x.y`——
+对便携用户毫无意义且难以察觉。预检发现非便携模式时，确认页给出明确
+警告 + 修复指引（新建 `portable` 文件夹后重跑）。
 
 ### 2.4 核心调用
 
@@ -76,8 +92,10 @@ migration_core.execute_existing_profile_migration_multi(
 
 ## 3. 防护与限制
 
-- 目标正在运行 → 核心层已有 `windows_executable_is_running` 检查，错误直接上屏
+- 目标正在运行 → 预检阶段即提示关闭（核心层另有 `windows_executable_is_running` 兜底）
 - 配置包放在目标 portable 目录内 → 核心层已有 `path_is_within` 检查
+- **目标未启用便携模式** → 预检检出并在确认页拦截式警告（见 §2.3.1）
+- 版本策略非法（跨主版本 / 目标不高于源）→ 预检提前报错，流程不空跑
 - **自我迁移限制**：插件内导入用 `current_user_root` 防止"在同一台机器的同一
   Blender 上导入自己导出的包"。CLI 不知道配置包来自哪台机器，该保护失效——
   若用户在本机对来源 Blender 执行导入，会覆盖其当前配置（有备份可回滚，
@@ -86,10 +104,11 @@ migration_core.execute_existing_profile_migration_multi(
 
 ## 4. 验证
 
-- 单测：validate_profile 三分支（合法配置包/pack.py 备份/垃圾文件）、
-  describe_profile 摘要、detect_target_version
-- 真机：Blender 5.1 无头只读探针（run_target_probe），确认 CLI 场景下
-  user_root 探测与插件内一致
+- 单测：validate_profile 六分支（合法配置包/pack.py 备份/垃圾文件/缺文件/
+  非 win32）、describe_profile 摘要（含预检展示/非便携警告/不兼容插件列举）、
+  detect_target_version、is_portable_user_root、version_string
+- 真机：Blender 5.1 无头只读探针（run_target_probe）确认 user_root 探测；
+  preflight_target 真机跑通，实测识别 `portable=True`
 - 全链路写入验证（真实执行迁移）不在本机执行——需隔离的测试 Blender，
   合并后由用户验证
 
