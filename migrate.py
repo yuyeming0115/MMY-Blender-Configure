@@ -8,6 +8,7 @@ MMY Blender Configure — 独立迁移工具（免插件安装）
 用法：
   python migrate.py                              # 图形模式（tkinter 双选框）
   python migrate.py <profile.zip> <blender.exe>  # 命令行模式
+  双击 run_migrate.bat                           # 图形模式（自动挑选带 tkinter 的解释器）
 
 原理：迁移执行链（migration_core）是纯 Python，通过
 blender.exe --background --python migration_worker.py 注入审计脚本，
@@ -398,9 +399,34 @@ def main() -> int:
     return 0
 
 
+def _show_fatal_error(text: str) -> None:
+    """图形模式经 pythonw 启动时没有控制台，用 Win32 弹窗兜底显示致命错误。
+
+    否则双击后启动失败会完全静默，用户无从判断。
+    """
+    print(text)
+    if os.name != "nt":
+        return
+    try:
+        import ctypes  # noqa: PLC0415
+
+        ctypes.windll.user32.MessageBoxW(None, text, "MMY 迁移工具启动失败", 0x10)
+    except Exception:  # noqa: BLE001 —— 兜底失败不再抛
+        pass
+
+
 if __name__ == "__main__":
     try:
         sys.exit(main())
     except KeyboardInterrupt:
         print("\n[MMY] 已取消。")
         sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 —— 兜底：任何未预期异常都要可见
+        import traceback
+
+        _show_fatal_error(
+            f"迁移工具启动或运行失败：\n\n{exc}\n\n详细信息：\n\n{traceback.format_exc()}"
+        )
+        sys.exit(1)
