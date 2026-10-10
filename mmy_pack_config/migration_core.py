@@ -528,6 +528,9 @@ def create_profile(snapshot: SourceSnapshot, output_dir: Path) -> ProfileResult:
                     "blender_version": list(normalize_version(snapshot.version)),
                     "platform": snapshot.platform,
                     "install_mode": snapshot.install_mode,
+                    # 源用户目录：独立 CLI 导入端据此还原「自迁移防护」
+                    # （插件内导入用运行时 current_user_root，不依赖此字段）
+                    "user_root": str(snapshot.user_root),
                 },
                 "target_policy": {
                     "forward_only": True,
@@ -1143,12 +1146,16 @@ def execute_existing_profile_migration_multi(
     profile_path: Path,
     target_executables: Iterable[Path],
     output_dir: Path,
-    current_user_root: Path,
+    current_user_root: Path | None,
     worker_script: Path,
     current_pid: int,
     audit_timeout: int = 300,
 ) -> tuple[ProfileResult, list[TargetMigrationOutcome]]:
-    """已有配置包迁移到多个目标，逐目标独立安装。"""
+    """已有配置包迁移到多个目标，逐目标独立安装。
+
+    ``current_user_root`` 为发起迁移的 Blender 用户目录（自迁移防护）；
+    独立 CLI 等无 Blender 会话的场景可传 ``None``，此时跳过该防护。
+    """
     targets = [Path(target) for target in target_executables]
     if not targets:
         raise MigrationError("未选择任何目标 Blender")
@@ -1158,7 +1165,8 @@ def execute_existing_profile_migration_multi(
     source_version = normalize_version(
         manifest.get("source", {}).get("blender_version", [])
     )
-    output = ensure_external_output(Path(output_dir), [current_user_root])
+    forbidden = [current_user_root] if current_user_root else []
+    output = ensure_external_output(Path(output_dir), forbidden)
     profile = ProfileResult(
         path=_resolved(profile_path),
         manifest=manifest,
@@ -1172,7 +1180,7 @@ def execute_existing_profile_migration_multi(
                 source_version=source_version,
                 target_executable=target,
                 output_dir=output,
-                forbidden_roots=[current_user_root],
+                forbidden_roots=forbidden,
                 worker_script=worker_script,
                 current_pid=current_pid,
                 audit_timeout=audit_timeout,
@@ -1189,7 +1197,7 @@ def execute_existing_profile_migration(
     profile_path: Path,
     target_executable: Path,
     output_dir: Path,
-    current_user_root: Path,
+    current_user_root: Path | None,
     worker_script: Path,
     current_pid: int,
     audit_timeout: int = 300,

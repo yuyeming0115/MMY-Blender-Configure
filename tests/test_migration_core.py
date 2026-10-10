@@ -302,6 +302,73 @@ class MigrationCoreTest(unittest.TestCase):
         )
         self.assertTrue((result.recovery_dir / "target_before.zip").is_file())
 
+    def test_profile_manifest_records_source_user_root(self):
+        profile = core.create_profile(self.snapshot(), self.output)
+        manifest = core.read_profile_manifest(profile.path)
+        self.assertEqual(manifest["source"]["user_root"], str(self.user_root))
+
+    def test_existing_profile_migration_accepts_none_user_root(self):
+        # 回归：独立 CLI 无 Blender 会话时传 None，历史上误传 [] 导致
+        # TypeError: argument should be a str or an os.PathLike object ...
+        profile = core.create_profile(self.snapshot(), self.output)
+        target_root = self.root / "target" / "5.3"
+        target_root.mkdir(parents=True)
+        probe = {
+            "version": [5, 3, 0],
+            "user_root": str(target_root),
+            "config_dir": str(target_root / "config"),
+            "scripts_dir": str(target_root / "scripts"),
+            "datafiles_dir": str(target_root / "datafiles"),
+            "extensions_dir": str(target_root / "extensions"),
+        }
+
+        def fake_audit(*args, **kwargs):
+            report_path = args[4]
+            report = {"status": "success", "disabled_addons": [], "warnings": []}
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            return report
+
+        with mock.patch.object(core, "run_target_probe", return_value=probe), mock.patch.object(
+            core, "run_target_audit", side_effect=fake_audit
+        ):
+            _, outcomes = core.execute_existing_profile_migration_multi(
+                profile.path,
+                [self.root / "Blender 5.3" / "blender.exe"],
+                self.root / "migration_output",
+                None,
+                self.root / "migration_worker.py",
+                current_pid=123,
+            )
+        self.assertEqual(len(outcomes), 1)
+        self.assertIsNotNone(outcomes[0].result)
+        self.assertTrue((target_root / "config" / "userpref.blend").is_file())
+
+    def test_self_migration_blocked_when_target_is_source_root(self):
+        profile = core.create_profile(self.snapshot(), self.output)
+        probe = {
+            "version": [5, 3, 0],
+            "user_root": str(self.user_root),
+            "config_dir": str(self.config),
+            "scripts_dir": str(self.scripts),
+            "datafiles_dir": str(self.datafiles),
+            "extensions_dir": str(self.user_root / "extensions"),
+        }
+        with mock.patch.object(core, "run_target_probe", return_value=probe):
+            _, outcomes = core.execute_existing_profile_migration_multi(
+                profile.path,
+                [self.root / "Blender 5.3" / "blender.exe"],
+                self.root / "migration_output",
+                self.user_root,
+                self.root / "migration_worker.py",
+                current_pid=123,
+            )
+        self.assertEqual(len(outcomes), 1)
+        self.assertIn("同一用户目录", outcomes[0].error)
+        # 源目录必须原封不动
+        self.assertEqual(
+            (self.config / "userpref.blend").read_bytes(), b"preferences"
+        )
+
     def test_plan_startup_mode_branches(self):
         # 无工作区清单（v1.4 旧包）→ legacy
         self.assertEqual(
