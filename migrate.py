@@ -145,7 +145,8 @@ COMPONENT_LABELS: dict[str, str] = {
     "datafiles": "数据文件 datafiles",
     "startup_scripts": "启动脚本 scripts/startup",
     "app_templates": "应用模板 bl_app_templates_user",
-    "history": "书签与最近文件",
+    "bookmarks": "文件浏览器书签 bookmarks.txt",
+    "history": "最近文件列表",
 }
 
 # 用户明确关心的「文件夹级」组件：缺失时必须告诉他，而不是静默少拷一份
@@ -468,6 +469,7 @@ def run_source_export(
         "datafiles": True,
         "startup_scripts": True,
         "app_templates": True,
+        "bookmarks": True,
         "history": False,
     }
     if components:
@@ -560,6 +562,7 @@ def describe_export_report(report: dict) -> str:
         "datafiles": "数据文件 datafiles",
         "startup_scripts": "启动脚本 scripts/startup",
         "app_templates": "应用模板 bl_app_templates_user",
+        "bookmarks": "文件浏览器书签",
         "history": "最近访问记录",
         "workspaces": "工作区清单",
         "keymap_fallback": "快捷键（keymap.py）",

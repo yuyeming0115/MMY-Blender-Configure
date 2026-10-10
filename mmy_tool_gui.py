@@ -80,9 +80,8 @@ class MigratePage:
     def _build_ui(self) -> None:
         outer = self.outer
 
-        files = gk.ttk.LabelFrame(outer, text=" ① 选择文件 ", padding=10)
-        files.pack(fill="x")
-        row = gk.ttk.Frame(files)
+        files = gk.build_section(outer, "1", "选择文件", "拖入或点击选择，选齐后自动检测")
+        row = gk.tk.Frame(files, bg=gk.COLOR_CARD)
         row.pack(fill="x")
         self.zone_profile = gk.DropZone(
             row,
@@ -91,7 +90,7 @@ class MigratePage:
             on_path=self._on_profile,
             file_types=[("迁移配置包", "*.zip"), ("所有文件", "*.*")],
         )
-        self.zone_profile.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        self.zone_profile.pack(side="left", fill="both", expand=True, padx=(0, 10))
         self.zone_exe = gk.DropZone(
             row,
             title="目标 Blender（blender.exe）",
@@ -101,31 +100,32 @@ class MigratePage:
         )
         self.zone_exe.pack(side="left", fill="both", expand=True)
 
-        confirm = gk.ttk.LabelFrame(outer, text=" ② 确认信息 ", padding=10)
-        confirm.pack(fill="x", pady=(10, 0))
-        self.summary = gk.ttk.Label(
+        confirm = gk.build_section(outer, "2", "确认信息")
+        self.summary = gk.tk.Label(
             confirm,
             text="请先选择配置包与目标 Blender（选齐后会自动检测）。",
+            bg=gk.COLOR_CARD,
+            fg=gk.COLOR_MUTED,
             font=(gk.FONT_FAMILY, gk.FONT_SIZE),
-            foreground=gk.COLOR_MUTED,
             justify="left",
-            wraplength=860,
+            anchor="w",
+            wraplength=880,
         )
         self.summary.pack(anchor="w", fill="x")
         self.btn_start = gk.ttk.Button(
-            confirm, text="开始导入", command=self._on_start, state="disabled", width=16
+            confirm, text="开始导入", command=self._on_start,
+            state="disabled", width=16, style="Accent.TButton",
         )
-        self.btn_start.pack(anchor="w", pady=(10, 0))
+        self.btn_start.pack(anchor="w", pady=(12, 0))
 
-        progress = gk.ttk.LabelFrame(outer, text=" ③ 进度 ", padding=10)
-        progress.pack(fill="both", expand=True, pady=(10, 0))
+        progress = gk.build_section(outer, "3", "进度")
         self.stages = gk.StageProgress(progress, MIGRATE_STAGES)
         self.stages.pack(anchor="w", fill="x", pady=(0, 8))
         self.log = gk.LogPanel(progress, height=8)
         self.log.pack(fill="both", expand=True)
 
         self.result = gk.ResultCard(outer)
-        self.result.pack(fill="x")
+        self.result.pack(fill="x", pady=(2, 0))
 
     # ---------------------------------------------------------- 事件
 
@@ -151,7 +151,7 @@ class MigratePage:
 
     def _start_preflight(self) -> None:
         self._file_busy = True
-        self.summary.configure(text="正在检测目标 Blender…", foreground=gk.COLOR_MUTED)
+        self.summary.configure(text="正在检测目标 Blender…", fg=gk.COLOR_MUTED)
         self.log.append("── 预检 ──")
 
         def work(stage, log):
@@ -201,7 +201,7 @@ class MigratePage:
             text=cli.describe_profile(
                 self.manifest, self.zone_exe.path, None, self.preflight
             ),
-            foreground=gk.COLOR_PRIMARY,
+            fg=gk.COLOR_PRIMARY,
         )
         self.btn_start.configure(state="normal")
         self.stages.reset()
@@ -296,18 +296,19 @@ class PackPage:
     def _build_ui(self) -> None:
         outer = self.outer
 
-        files = gk.ttk.LabelFrame(outer, text=" ① 选择要打包的文件夹 ", padding=10)
-        files.pack(fill="x")
-        gk.ttk.Label(
+        files = gk.build_section(outer, "1", "选择要打包的文件夹")
+        gk.tk.Label(
             files,
             text="⚠ 这是整目录备份包，只能用于备份或同版本覆盖解压，"
             "不能跨版本迁移（体积含大量缓存）。\n"
             "   需要跨版本迁移请用「导出迁移包」页。",
+            bg=gk.COLOR_CARD,
+            fg=gk.COLOR_ERROR,
             font=(gk.FONT_FAMILY, gk.FONT_SIZE),
-            foreground=gk.COLOR_ERROR,
-            wraplength=860,
+            wraplength=880,
             justify="left",
-        ).pack(anchor="w", fill="x", pady=(0, 8))
+            anchor="w",
+        ).pack(anchor="w", fill="x", pady=(0, 10))
         self.zone = gk.DropZone(
             files,
             title="Blender portable 文件夹",
@@ -317,42 +318,42 @@ class PackPage:
         )
         self.zone.pack(fill="x")
 
-        output = gk.ttk.LabelFrame(outer, text=" ② 输出设置 ", padding=10)
-        output.pack(fill="x", pady=(10, 0))
+        output = gk.build_section(outer, "2", "输出设置")
         self.var_compress = gk.tk.BooleanVar(value=False)
-        row = gk.ttk.Frame(output)
-        row.pack(fill="x")
         gk.ttk.Checkbutton(
-            row,
+            output,
             text="压缩文件体积（更小，但慢很多）",
             variable=self.var_compress,
-        ).pack(side="left")
+            style="Card.TCheckbutton",
+        ).pack(anchor="w")
         gk.ttk.Button(
             output, text="选择输出位置…", command=self._on_pick_output, width=18
-        ).pack(anchor="w", pady=(8, 0))
-        self.output_label = gk.ttk.Label(
+        ).pack(anchor="w", pady=(10, 0))
+        self.output_label = gk.tk.Label(
             output,
             text="（打包时自动生成文件名）",
+            bg=gk.COLOR_CARD,
+            fg=gk.COLOR_MUTED,
             font=(gk.FONT_FAMILY, gk.FONT_SIZE),
-            foreground=gk.COLOR_MUTED,
-            wraplength=840,
+            wraplength=860,
             justify="left",
+            anchor="w",
         )
-        self.output_label.pack(anchor="w", fill="x", pady=(6, 0))
+        self.output_label.pack(anchor="w", fill="x", pady=(8, 0))
         self.btn_start = gk.ttk.Button(
-            output, text="开始打包", command=self._on_start, state="disabled", width=16
+            output, text="开始打包", command=self._on_start,
+            state="disabled", width=16, style="Accent.TButton",
         )
-        self.btn_start.pack(anchor="w", pady=(10, 0))
+        self.btn_start.pack(anchor="w", pady=(12, 0))
 
-        progress = gk.ttk.LabelFrame(outer, text=" ③ 进度 ", padding=10)
-        progress.pack(fill="both", expand=True, pady=(10, 0))
+        progress = gk.build_section(outer, "3", "进度")
         self.stages = gk.StageProgress(progress, PACK_STAGES)
         self.stages.pack(anchor="w", fill="x", pady=(0, 8))
         self.log = gk.LogPanel(progress, height=8)
         self.log.pack(fill="both", expand=True)
 
         self.result = gk.ResultCard(outer)
-        self.result.pack(fill="x")
+        self.result.pack(fill="x", pady=(2, 0))
 
     # ---------------------------------------------------------- 事件
 
@@ -370,7 +371,7 @@ class PackPage:
 
     def _suggest_output(self, path: str) -> None:
         self.output_path = path
-        self.output_label.configure(text=path, foreground=gk.COLOR_PRIMARY)
+        self.output_label.configure(text=path, fg=gk.COLOR_PRIMARY)
 
     def _on_pick_output(self) -> None:
         chosen = gk.filedialog.asksaveasfilename(
@@ -474,6 +475,7 @@ class ExportPage:
         ("datafiles", "数据文件（datafiles）", "贴图、HDRI、matcap，纯数据，跨版本安全", True),
         ("startup_scripts", "启动脚本（scripts/startup）", "启动时执行的代码，依赖旧版 API 可能报错", True),
         ("app_templates", "应用模板", "自定义应用模板，纯数据", True),
+        ("bookmarks", "文件浏览器书签", "文件浏览器侧栏的常用文件夹列表，换机后路径不存在会自动隐藏", True),
         ("history", "最近访问记录", "文件路径历史，换机器后基本无用", False),
     ]
 
@@ -496,9 +498,8 @@ class ExportPage:
     def _build_ui(self) -> None:
         outer = self.outer
 
-        tip = gk.ttk.LabelFrame(outer, text=" ① 选择源 Blender ", padding=10)
-        tip.pack(fill="x")
-        row = gk.ttk.Frame(tip)
+        tip = gk.build_section(outer, "1", "选择源 Blender", "导出的包可以拖到「配置迁移」页导入")
+        row = gk.tk.Frame(tip, bg=gk.COLOR_CARD)
         row.pack(fill="x")
         self.zone_portable = gk.DropZone(
             row,
@@ -507,7 +508,7 @@ class ExportPage:
             on_path=self._on_portable,
             want_directory=True,
         )
-        self.zone_portable.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        self.zone_portable.pack(side="left", fill="both", expand=True, padx=(0, 10))
         self.zone_exe = gk.DropZone(
             row,
             title="旧版 blender.exe（可选）",
@@ -517,57 +518,52 @@ class ExportPage:
         )
         self.zone_exe.pack(side="left", fill="both", expand=True)
 
-        comps = gk.ttk.LabelFrame(outer, text=" ② 要带走的内容 ", padding=10)
-        comps.pack(fill="x", pady=(10, 0))
-        gk.ttk.Label(
-            comps,
-            text="迁移包只挑这些组件，能大幅减小体积并避开缓存文件。",
-            font=(gk.FONT_FAMILY, gk.FONT_SIZE),
-            foreground=gk.COLOR_MUTED,
-            wraplength=860,
-            justify="left",
-        ).pack(anchor="w")
+        comps = gk.build_section(outer, "2", "要带走的内容", "只挑勾选的组件，避开缓存文件")
         self.var_components: dict[str, gk.tk.BooleanVar] = {}
-        grid = gk.ttk.Frame(comps)
-        grid.pack(fill="x", pady=(6, 0))
+        grid = gk.tk.Frame(comps, bg=gk.COLOR_CARD)
+        grid.pack(fill="x")
         for index, (key, label, hint, default) in enumerate(self.COMPONENT_ROWS):
             var = gk.tk.BooleanVar(value=default)
             self.var_components[key] = var
-            cell = gk.ttk.Frame(grid)
-            cell.grid(row=index // 2, column=index % 2, sticky="w", pady=2, padx=(0, 12))
-            gk.ttk.Checkbutton(cell, text=label, variable=var).pack(anchor="w")
-            gk.ttk.Label(
-                cell, text=hint, font=(gk.FONT_FAMILY, 9), foreground=gk.COLOR_MUTED
+            cell = gk.tk.Frame(grid, bg=gk.COLOR_CARD)
+            cell.grid(row=index // 2, column=index % 2, sticky="nw", pady=4, padx=(0, 24))
+            gk.ttk.Checkbutton(
+                cell, text=label, variable=var, style="Card.TCheckbutton"
             ).pack(anchor="w")
+            gk.tk.Label(
+                cell, text=hint, bg=gk.COLOR_CARD, fg=gk.COLOR_MUTED,
+                font=(gk.FONT_FAMILY, gk.FONT_SIZE - 2),
+            ).pack(anchor="w", padx=(22, 0))
 
-        output = gk.ttk.LabelFrame(outer, text=" ③ 输出位置 ", padding=10)
-        output.pack(fill="x", pady=(10, 0))
+        output = gk.build_section(outer, "3", "输出位置")
         gk.ttk.Button(
             output, text="选择输出文件夹…", command=self._on_pick_output, width=20
         ).pack(anchor="w")
-        self.output_label = gk.ttk.Label(
+        self.output_label = gk.tk.Label(
             output,
             text="（默认为桌面，导出时自动生成文件名）",
+            bg=gk.COLOR_CARD,
+            fg=gk.COLOR_MUTED,
             font=(gk.FONT_FAMILY, gk.FONT_SIZE),
-            foreground=gk.COLOR_MUTED,
-            wraplength=840,
+            wraplength=860,
             justify="left",
+            anchor="w",
         )
-        self.output_label.pack(anchor="w", fill="x", pady=(6, 0))
+        self.output_label.pack(anchor="w", fill="x", pady=(8, 0))
         self.btn_start = gk.ttk.Button(
-            output, text="开始导出迁移包", command=self._on_start, state="disabled", width=18
+            output, text="开始导出迁移包", command=self._on_start,
+            state="disabled", width=18, style="Accent.TButton",
         )
-        self.btn_start.pack(anchor="w", pady=(10, 0))
+        self.btn_start.pack(anchor="w", pady=(12, 0))
 
-        progress = gk.ttk.LabelFrame(outer, text=" ④ 进度 ", padding=10)
-        progress.pack(fill="both", expand=True, pady=(10, 0))
+        progress = gk.build_section(outer, "4", "进度")
         self.stages = gk.StageProgress(progress, EXPORT_STAGES)
         self.stages.pack(anchor="w", fill="x", pady=(0, 8))
         self.log = gk.LogPanel(progress, height=8)
         self.log.pack(fill="both", expand=True)
 
         self.result = gk.ResultCard(outer)
-        self.result.pack(fill="x")
+        self.result.pack(fill="x", pady=(2, 0))
 
     # ---------------------------------------------------------- 事件
 
@@ -606,7 +602,7 @@ class ExportPage:
 
     def _suggest_output(self, path: str) -> None:
         self.output_dir = path
-        self.output_label.configure(text=path, foreground=gk.COLOR_PRIMARY)
+        self.output_label.configure(text=path, fg=gk.COLOR_PRIMARY)
 
     def _on_start(self) -> None:
         portable = self.zone_portable.path
@@ -725,9 +721,9 @@ class ToolApp:
         self.migrate_scroll = gk.ScrollPane(self.notebook)
         self.export_scroll = gk.ScrollPane(self.notebook)
         self.pack_scroll = gk.ScrollPane(self.notebook)
-        self.notebook.add(self.migrate_scroll, text="  配置迁移  ")
-        self.notebook.add(self.export_scroll, text="  导出迁移包  ")
-        self.notebook.add(self.pack_scroll, text="  配置打包  ")
+        self.notebook.add(self.migrate_scroll, text="  📥 配置迁移  ")
+        self.notebook.add(self.export_scroll, text="  📤 导出迁移包  ")
+        self.notebook.add(self.pack_scroll, text="  📦 配置打包  ")
 
         self.migrate_page = MigratePage(self.migrate_scroll.body, root, self.migrate_scroll)
         self.export_page = ExportPage(self.export_scroll.body, root, self.export_scroll)

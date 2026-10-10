@@ -262,8 +262,15 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
         default=True,
     )
 
+    migration_include_bookmarks: bpy.props.BoolProperty(
+        name="默认包含文件浏览器书签",
+        description="打包 config/bookmarks.txt（文件浏览器侧栏的常用文件夹列表），"
+        "换机后路径不存在会自动隐藏，属用户主动维护的数据，默认开启",
+        default=True,
+    )
+
     migration_include_history: bpy.props.BoolProperty(
-        name="默认包含书签与最近文件",
+        name="默认包含最近文件列表",
         default=False,
     )
 

@@ -130,6 +130,7 @@ def _prepare_source_snapshot(
     include_startup_scripts: bool,
     include_app_templates: bool,
     include_history: bool,
+    include_bookmarks: bool = True,
 ) -> tuple[SourceSnapshot, Path]:
     save_result = bpy.ops.wm.save_userpref()
     if "FINISHED" not in save_result:
@@ -181,6 +182,7 @@ def _prepare_source_snapshot(
             include_datafiles=include_datafiles,
             include_startup_scripts=include_startup_scripts,
             include_app_templates=include_app_templates,
+            include_bookmarks=include_bookmarks,
             include_history=include_history,
         )
         return snapshot, work_dir
@@ -304,6 +306,7 @@ class _SnapshotOptionsMixin:
             self.include_datafiles = preferences.migration_include_datafiles
             self.include_startup_scripts = preferences.migration_include_startup_scripts
             self.include_app_templates = preferences.migration_include_app_templates
+            self.include_bookmarks = preferences.migration_include_bookmarks
             self.include_history = preferences.migration_include_history
         self.confirm_startup_risk = False
 
@@ -315,6 +318,7 @@ class _SnapshotOptionsMixin:
         safe_box.label(text="🟢 安全（默认迁移）", icon='CHECKMARK')
         safe_box.label(text="偏好设置 / 快捷键 / 启动文件 / 插件与扩展：始终包含", icon='BLANK1')
         safe_box.prop(self, "include_presets")
+        safe_box.prop(self, "include_bookmarks")
 
         caution_box = layout.box()
         caution_box.label(text="🟡 谨慎（按需勾选）", icon='SORTTIME')
@@ -388,8 +392,12 @@ class MMY_OT_MigrateToBlender(
         name="应用模板（bl_app_templates_user，含 .blend 布局文件）",
         default=False,
     )
+    include_bookmarks: bpy.props.BoolProperty(
+        name="文件浏览器书签（config/bookmarks.txt，常用文件夹列表）",
+        default=True,
+    )
     include_history: bpy.props.BoolProperty(
-        name="书签与最近文件（含本机路径）",
+        name="最近文件列表（仅路径历史，换机后基本无用）",
         default=False,
     )
     confirm_startup_risk: bpy.props.BoolProperty(
@@ -655,6 +663,8 @@ def _run_precheck(
             components.append("startup_scripts")
         if snapshot.include_app_templates:
             components.append("app_templates")
+        if snapshot.include_bookmarks:
+            components.append("bookmarks")
         if snapshot.include_history:
             components.append("history")
 
@@ -951,6 +961,7 @@ class MMY_OT_ExportConfig(_AsyncOperatorMixin, bpy.types.Operator):
                 include_datafiles=include_datafiles,
                 include_startup_scripts=include_startup_scripts,
                 include_app_templates=include_app_templates,
+                include_bookmarks=preferences.migration_include_bookmarks if preferences else True,
                 include_history=preferences.migration_include_history if preferences else False,
             )
         except Exception as exc:

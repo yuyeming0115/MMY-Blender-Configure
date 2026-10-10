@@ -36,22 +36,32 @@ from gui_logic import (  # noqa: F401
 )
 
 # ============================================================
-# 主题常量（迁移与打包 GUI 共用，确保视觉一致）
+# 主题常量（三页 GUI 共用，确保视觉一致）
+#
+# 配色参考用户手绘稿：奶油色页面底 + 白色分区卡片 + 柔和边框，
+# 绿色作为「行动」色（开始按钮），蓝色只用于路径/链接高亮。
 # ============================================================
 
 FONT_FAMILY = "Microsoft YaHei UI"
 FONT_SIZE = 11          # 正文；视力适配，不低于 11pt
 MONO_FAMILY = "Consolas"
 MONO_SIZE = 10
-TITLE_SIZE = 15
+TITLE_SIZE = 16
 
-COLOR_PRIMARY = "#2d6cdf"
-COLOR_SUCCESS = "#1a7f37"
-COLOR_ERROR = "#cf222e"
-COLOR_MUTED = "#57606a"
-COLOR_BORDER = "#d0d7de"
-COLOR_LOG_BG = "#f6f8fa"
-COLOR_CARD_BG = "#ffffff"
+COLOR_BG = "#f6f1e6"            # 页面奶油底
+COLOR_CARD = "#ffffff"          # 卡片白
+COLOR_CARD_BORDER = "#e2dac4"   # 卡片柔和边框
+COLOR_TEXT = "#3d382e"          # 正文暖黑
+COLOR_MUTED = "#8d8471"         # 次要文字暖灰
+COLOR_PRIMARY = "#3f7fbf"       # 主蓝：已选路径 / 链接
+COLOR_ACCENT = "#74a04a"        # 行动绿：开始按钮 / 序号徽章
+COLOR_SUCCESS = "#3d8b40"
+COLOR_ERROR = "#c0392b"
+COLOR_LOG_BG = "#fffdf6"
+
+# 兼容别名（历史代码引用）
+COLOR_BORDER = COLOR_CARD_BORDER
+COLOR_CARD_BG = COLOR_BG
 
 # 阶段状态符号
 ICON_PENDING = "○"
@@ -86,18 +96,81 @@ def _enable_dpi_awareness() -> None:
         pass
 
 
-def make_root(title: str, geometry: str = "1000x760") -> tk.Tk:
+def apply_theme(root: tk.Tk) -> None:
+    """统一配置 ttk 样式（奶油底 + 白卡片 + 柔和边框的手绘稿风格）。"""
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")  # 跨平台一致，且支持逐样式配色
+    except tk.TclError:  # pragma: no cover —— 极老 Tcl 缺 clam
+        return
+    base = {"font": (FONT_FAMILY, FONT_SIZE), "background": COLOR_BG,
+            "foreground": COLOR_TEXT}
+    style.configure(".", **base)
+    style.configure("TFrame", background=COLOR_BG)
+    style.configure("TLabel", background=COLOR_BG, foreground=COLOR_TEXT)
+    # 卡片内使用的白色底变体
+    style.configure(
+        "Card.TFrame", background=COLOR_CARD, relief="solid",
+        borderwidth=1, bordercolor=COLOR_CARD_BORDER,
+        lightcolor=COLOR_CARD_BORDER, darkcolor=COLOR_CARD_BORDER,
+    )
+    # 卡片内部的布局容器：白底但不要外框（避免「框中框」）
+    style.configure("CardPlain.TFrame", background=COLOR_CARD, relief="flat",
+                    borderwidth=0)
+    style.configure("Card.TLabel", background=COLOR_CARD, foreground=COLOR_TEXT)
+    style.configure("CardMuted.TLabel", background=COLOR_CARD, foreground=COLOR_MUTED)
+    style.configure(
+        "CardTitle.TLabel", background=COLOR_CARD, foreground=COLOR_TEXT,
+        font=(FONT_FAMILY, FONT_SIZE + 1, "bold"),
+    )
+    # 按钮：白底柔和边框；Accent 变体是绿色行动按钮
+    style.configure(
+        "TButton", padding=(14, 6), background=COLOR_CARD,
+        bordercolor=COLOR_CARD_BORDER, lightcolor=COLOR_CARD,
+        darkcolor=COLOR_CARD_BORDER, focuscolor=COLOR_PRIMARY,
+    )
+    style.map("TButton", background=[("pressed", "#e8e1cf"), ("active", "#f3eddc")])
+    style.configure(
+        "Accent.TButton", background=COLOR_ACCENT, foreground="#ffffff",
+        bordercolor=COLOR_ACCENT, lightcolor=COLOR_ACCENT, darkcolor=COLOR_ACCENT,
+        font=(FONT_FAMILY, FONT_SIZE, "bold"), padding=(18, 7),
+    )
+    style.map(
+        "Accent.TButton",
+        background=[("pressed", "#5f8438"), ("active", "#83b055"), ("disabled", "#c9c2ad")],
+        foreground=[("disabled", "#f2eee2")],
+    )
+    style.configure("TCheckbutton", background=COLOR_BG, foreground=COLOR_TEXT)
+    style.configure("Card.TCheckbutton", background=COLOR_CARD, foreground=COLOR_TEXT)
+    style.map("TCheckbutton", background=[("active", COLOR_BG)])
+    style.map("Card.TCheckbutton", background=[("active", COLOR_CARD)])
+    # 笔记本页签：未选中浅米色页签，选中白色与内容区相连（expand 去掉接缝）
+    style.configure("TNotebook", background=COLOR_BG, borderwidth=0,
+                    tabmargins=(10, 5, 10, 0))
+    style.configure("TNotebook.Tab", padding=(16, 7), background="#eae2cd",
+                    foreground=COLOR_MUTED)
+    style.map(
+        "TNotebook.Tab",
+        background=[("selected", COLOR_CARD)],
+        foreground=[("selected", COLOR_TEXT)],
+        expand=[("selected", [1, 1, 1, 0])],
+    )
+    style.configure(
+        "Vertical.TScrollbar", background="#e6dfca", troughcolor=COLOR_BG,
+        bordercolor=COLOR_BG, arrowcolor=COLOR_MUTED, width=12,
+    )
+    style.map("Vertical.TScrollbar", background=[("active", "#d5ccb0")])
+
+
+def make_root(title: str, geometry: str = "1000x780") -> tk.Tk:
     """创建统一风格的主窗口（有拖拽库时用 TkinterDnD 根窗口）。"""
     _enable_dpi_awareness()
     root = TkinterDnD.Tk() if DND_AVAILABLE else tk.Tk()
     root.title(title)
     root.geometry(geometry)
     root.minsize(860, 560)
-    try:
-        style = ttk.Style(root)
-        style.theme_use("clam")  # 跨平台一致的外观
-    except tk.TclError:  # pragma: no cover —— 极老 Tcl 缺 clam
-        pass
+    root.configure(bg=COLOR_BG)
+    apply_theme(root)
     return root
 
 
@@ -120,7 +193,7 @@ class ScrollPane(ttk.Frame):
             self,
             highlightthickness=0,
             borderwidth=0,
-            background=COLOR_CARD_BG,
+            background=COLOR_BG,
         )
         self._bar = ttk.Scrollbar(
             self, orient="vertical", command=self._canvas.yview
@@ -130,7 +203,7 @@ class ScrollPane(ttk.Frame):
         self._canvas.pack(side="left", fill="both", expand=True)
 
         # 内容容器：嵌在 Canvas 里，随内容高度自动扩展
-        self.body = ttk.Frame(self._canvas, padding=14)
+        self.body = ttk.Frame(self._canvas, padding=(16, 14))
         self._window = self._canvas.create_window(
             (0, 0), window=self.body, anchor="nw"
         )
@@ -303,10 +376,12 @@ class TaskRunner:
 # ============================================================
 
 
-class DropZone(ttk.Frame):
+class DropZone(tk.Frame):
     """投放区：支持拖入 + 点击选择双通道。
 
     ``tkinterdnd2`` 不可用时自动退化为纯点击选择，界面提示同步调整。
+    容器用 tk.Frame（白底）：ttk.Frame 的背景是页面奶油色，会在白卡片
+    外面露一圈底色。
     """
 
     def __init__(
@@ -319,35 +394,41 @@ class DropZone(ttk.Frame):
         want_directory: bool = False,
         file_types: list[tuple[str, str]] | None = None,
     ) -> None:
-        super().__init__(master, padding=2)
+        super().__init__(master, bg=COLOR_CARD)
         self._on_path = on_path
         self._want_directory = want_directory
         self._file_types = file_types or [("所有文件", "*.*")]
         self._path: str = ""
         self._drop = DND_AVAILABLE
 
-        style = ttk.Style(self)
-        style.configure(
-            "Drop.TFrame", relief="groove", borderwidth=2, background="#ffffff"
+        # 白底卡片：tk.Frame 原生支持边框高亮，hover 反馈比 ttk style map 可靠
+        outer = tk.Frame(
+            self, bg=COLOR_CARD,
+            highlightbackground=COLOR_CARD_BORDER, highlightthickness=1,
         )
-        outer = ttk.Frame(self, style="Drop.TFrame", padding=10)
+        self._outer = outer
         outer.pack(fill="both", expand=True)
+        inner = tk.Frame(outer, bg=COLOR_CARD, padx=14, pady=12)
+        inner.pack(fill="both", expand=True)
 
-        ttk.Label(
-            outer, text=title, font=(FONT_FAMILY, FONT_SIZE, "bold")
+        tk.Label(
+            inner, text=title, bg=COLOR_CARD, fg=COLOR_TEXT,
+            font=(FONT_FAMILY, FONT_SIZE, "bold"),
         ).pack(anchor="w")
         hint_text = hint if self._drop else f"{hint}（点击下方按钮选择）"
-        self._path_label = ttk.Label(
-            outer,
+        self._path_label = tk.Label(
+            inner,
             text=hint_text,
-            font=(FONT_FAMILY, FONT_SIZE),
-            foreground=COLOR_MUTED,
-            wraplength=330,
+            bg=COLOR_CARD,
+            fg=COLOR_MUTED,
+            font=(FONT_FAMILY, FONT_SIZE - 1),
+            wraplength=320,
             justify="left",
+            anchor="w",
         )
-        self._path_label.pack(anchor="w", fill="x", pady=(4, 8))
+        self._path_label.pack(anchor="w", fill="x", pady=(5, 10))
         ttk.Button(
-            outer, text="选择…", command=self._browse, width=12
+            inner, text="选择…", command=self._browse, width=12
         ).pack(anchor="w")
 
         if self._drop:
@@ -380,15 +461,9 @@ class DropZone(ttk.Frame):
         self._highlight(False)
 
     def _highlight(self, active: bool) -> None:
-        color = COLOR_PRIMARY if active else "#ffffff"
-        try:
-            self.winfo_toplevel().tk.call(
-                "ttk::style", "map", "Drop.TFrame",
-                "-background", "active", color,
-                "-background", "!active", "#ffffff",
-            )
-        except Exception:  # noqa: BLE001 —— 高亮是纯装饰，失败不影响功能
-            pass
+        color = COLOR_PRIMARY if active else COLOR_CARD_BORDER
+        with contextlib.suppress(Exception):
+            self._outer.configure(highlightbackground=color)
 
     @property
     def path(self) -> str:
@@ -397,7 +472,7 @@ class DropZone(ttk.Frame):
     def set_path(self, value: str) -> None:
         self._path = value
         self._path_label.configure(
-            text=str(value), foreground=COLOR_PRIMARY
+            text=str(value), fg=COLOR_PRIMARY
         )
 
     def _browse(self) -> None:
@@ -473,21 +548,25 @@ class DropZone(ttk.Frame):
             )
 
 
-class StageProgress(ttk.Frame):
+class StageProgress(tk.Frame):
     """阶段进度：步骤列表 + 当前步高亮 + 可选百分比。"""
 
     def __init__(self, master: tk.Misc, stages: list[tuple[str, str]]) -> None:
-        super().__init__(master)
+        super().__init__(master, bg=COLOR_CARD)
         self._stages = list(stages)
         self._rows: dict[str, tuple[ttk.Label, ttk.Label]] = {}
         for key, label in self._stages:
-            row = ttk.Frame(self)
+            row = ttk.Frame(self, style="CardPlain.TFrame")
             row.pack(fill="x", pady=1)
             icon = ttk.Label(
-                row, text=ICON_PENDING, font=(FONT_FAMILY, FONT_SIZE), width=2
+                row, text=ICON_PENDING, font=(FONT_FAMILY, FONT_SIZE),
+                width=2, style="Card.TLabel",
             )
             icon.pack(side="left")
-            text = ttk.Label(row, text=label, font=(FONT_FAMILY, FONT_SIZE))
+            text = ttk.Label(
+                row, text=label, font=(FONT_FAMILY, FONT_SIZE),
+                style="Card.TLabel",
+            )
             text.pack(side="left")
             self._rows[key] = (icon, text)
         self.reset()
@@ -552,20 +631,22 @@ class StageProgress(ttk.Frame):
         )
 
 
-class LogPanel(ttk.Frame):
+class LogPanel(tk.Frame):
     """实时日志面板（自动滚到底，超量滚动裁剪）。"""
 
     MAX_LINES = 5000
 
     def __init__(self, master: tk.Misc, height: int = 10) -> None:
-        super().__init__(master)
+        super().__init__(master, bg=COLOR_CARD)
         self._text = tk.Text(
             self,
             height=height,
             font=(MONO_FAMILY, MONO_SIZE),
             background=COLOR_LOG_BG,
-            relief="solid",
-            borderwidth=1,
+            foreground=COLOR_TEXT,
+            highlightbackground=COLOR_CARD_BORDER,
+            highlightthickness=1,
+            borderwidth=0,
             wrap="none",
             state="disabled",
         )
@@ -600,7 +681,7 @@ class ResultCard(ttk.Frame):
 
     def __init__(self, master: tk.Misc) -> None:
         super().__init__(master)
-        self._body = ttk.Frame(self)
+        self._body = ttk.Frame(self, style="Card.TFrame")
 
     def clear(self) -> None:
         for child in self._body.winfo_children():
@@ -633,15 +714,16 @@ class ResultCard(ttk.Frame):
         notify: bool = False,
     ) -> None:
         self.clear()
-        self._body.configure(relief="solid", borderwidth=1, padding=12)
-        self._body.pack(fill="x", pady=(8, 0))
+        self._body.configure(padding=14)
+        self._body.pack(fill="x", pady=(10, 0))
         self.reveal()
 
         ttk.Label(
             self._body,
             text=("✅ " if ok else "❌ ") + title,
-            font=(FONT_FAMILY, TITLE_SIZE, "bold"),
+            font=(FONT_FAMILY, TITLE_SIZE - 1, "bold"),
             foreground=COLOR_SUCCESS if ok else COLOR_ERROR,
+            style="Card.TLabel",
         ).pack(anchor="w")
         if message:
             ttk.Label(
@@ -651,9 +733,10 @@ class ResultCard(ttk.Frame):
                 foreground=COLOR_ERROR if not ok else COLOR_MUTED,
                 wraplength=840,
                 justify="left",
+                style="CardMuted.TLabel",
             ).pack(anchor="w", pady=(6, 0))
         for key, value in details:
-            row = ttk.Frame(self._body)
+            row = ttk.Frame(self._body, style="CardPlain.TFrame")
             row.pack(fill="x", pady=(4, 0))
             ttk.Label(
                 row,
@@ -662,14 +745,15 @@ class ResultCard(ttk.Frame):
                 foreground=COLOR_MUTED,
                 width=14,
                 anchor="w",
+                style="CardMuted.TLabel",
             ).pack(side="left")
             ttk.Label(
                 row, text=value, font=(FONT_FAMILY, FONT_SIZE), wraplength=680,
-                justify="left",
+                justify="left", style="Card.TLabel",
             ).pack(side="left", fill="x", expand=True)
         buttons = list(actions)
         if buttons:
-            bar = ttk.Frame(self._body)
+            bar = ttk.Frame(self._body, style="CardPlain.TFrame")
             bar.pack(anchor="w", pady=(10, 0))
             for label, command in buttons:
                 ttk.Button(bar, text=label, command=command, width=16).pack(
@@ -709,8 +793,9 @@ def open_in_explorer(path: str | Path) -> None:
 
 
 def build_header(master: tk.Misc, title: str, subtitle: str) -> ttk.Frame:
-    """统一的标题区。"""
+    """统一的标题区：大标题 + 副标题 + 底部分隔线。"""
     frame = ttk.Frame(master)
+    frame.pack(fill="x")
     ttk.Label(
         frame, text=title, font=(FONT_FAMILY, TITLE_SIZE, "bold")
     ).pack(anchor="w")
@@ -719,7 +804,40 @@ def build_header(master: tk.Misc, title: str, subtitle: str) -> ttk.Frame:
         text=subtitle,
         font=(FONT_FAMILY, FONT_SIZE),
         foreground=COLOR_MUTED,
-        wraplength=860,
+        wraplength=880,
         justify="left",
-    ).pack(anchor="w", pady=(2, 0))
+    ).pack(anchor="w", pady=(2, 8))
+    line = tk.Frame(frame, bg=COLOR_CARD_BORDER, height=1)
+    line.pack(fill="x")
     return frame
+
+
+def build_section(
+    master: tk.Misc, number: str, title: str, subtitle: str = ""
+) -> tk.Frame:
+    """分区卡片：绿色序号徽章 + 标题行的白色卡片，返回**内容容器**。
+
+    调用方把该页内容 pack 进返回的容器即可；卡片本身已 fill="x" 排好。
+    ``number`` 传入 "1"/"2"/"3" 或 "①" 等单/双字符。
+    """
+    card = ttk.Frame(master, style="Card.TFrame", padding=(16, 13))
+    card.pack(fill="x", pady=(0, 12))
+    head = tk.Frame(card, bg=COLOR_CARD)
+    head.pack(fill="x")
+    badge = tk.Label(
+        head, text=number, bg=COLOR_ACCENT, fg="#ffffff",
+        font=(FONT_FAMILY, 10, "bold"), width=2,
+    )
+    badge.pack(side="left", ipady=1)
+    tk.Label(
+        head, text=title, bg=COLOR_CARD, fg=COLOR_TEXT,
+        font=(FONT_FAMILY, FONT_SIZE + 1, "bold"),
+    ).pack(side="left", padx=(9, 0))
+    if subtitle:
+        tk.Label(
+            head, text=subtitle, bg=COLOR_CARD, fg=COLOR_MUTED,
+            font=(FONT_FAMILY, FONT_SIZE - 1),
+        ).pack(side="left", padx=(10, 0))
+    body = tk.Frame(card, bg=COLOR_CARD)
+    body.pack(fill="x", pady=(11, 2))
+    return body

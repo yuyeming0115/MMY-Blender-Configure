@@ -182,6 +182,7 @@ def run() -> dict:
             include_datafiles=options["datafiles"],
             include_startup_scripts=options["startup_scripts"],
             include_app_templates=options["app_templates"],
+            include_bookmarks=options.get("bookmarks", True),
             include_history=options["history"],
         )
 

@@ -464,3 +464,51 @@ v1.6.0 绕开整个问题：导出走 GUI，**组件开关由 GUI 上的复选�
 真实链路验证（5.1 → 5.2，本机实跑）：导出 103.9 MB / 5444 文件 →
 `validate_profile` 通过 → `preflight_target` 通过 → `missing_folder_components`
 返回「无」→ 自迁移防护识别出 `C:\BlenderAPP\Blender5.1\portable`。
+
+---
+
+## 13. v1.6.1：书签独立成组件 + GUI 视觉改版
+
+### 13.1 书签为什么丢（根因）
+
+实测用户场景：迁移完成后文件浏览器侧栏的书签全部丢失。
+
+- 书签的存储位置：**不在 userpref.blend 里**，而是独立文本文件
+  `config/bookmarks.txt`（`[Bookmarks]` + `[Recent]` 两段 INI 式文本）。
+  探测方法：二进制搜 userpref 无果 → 列 config 目录发现该文件。
+- 丢失根因：**分类错误**。`bookmarks.txt` 在 `_profile_sources` 里挂在
+  `history` 组件下，而 history 默认关闭——书签被「最近文件」这个
+  毫不相干的开关连坐关闭，且无任何提示。
+- 修复：拆出独立 `bookmarks` 组件，全链路默认 True（core 快照字段、
+  插件偏好、插件导出对话框、GUI 导出页复选框、migrate.py 报告映射）。
+  history 组件只剩 recent-files.txt，文案改为「最近文件列表」避免再混淆。
+
+### 13.2 GUI 视觉改版（按用户手绘稿）
+
+用户给了手绘参考稿，提取出的设计要素与 tkinter 落地方式：
+
+| 手绘稿要素 | tkinter 落地 |
+|---|---|
+| 奶油色纸面底 | `COLOR_BG #f6f1e6`，root + TFrame/TLabel 全局配 |
+| 白色分区卡片 | `Card.TFrame`（clam solid 1px 边框）+ `build_section()` |
+| 绿色序号徽章 ①②③ | tk.Label 绿色色块 + 标题，徽章区即分区标题行 |
+| 文件夹页签式标签 | `TNotebook.Tab`：未选中浅米色、选中白底 + `expand=[1,1,1,0]` 消接缝 |
+| 绿色「开始」按钮 | `Accent.TButton` 样式（disabled 时灰绿不刺眼） |
+| 投放区是白卡片 | DropZone 改用 tk.Frame（白底 + highlight 边框），hover 变蓝边 |
+
+踩坑与对策：
+
+- **ttk.Frame 的底色是样式级的**：DropZone/StageProgress/LogPanel 若用
+  ttk.Frame，卡片外会露一圈奶油底色。容器类组件改用 tk.Frame 自带白底。
+- **卡片内需要一套「白底变体」样式**：`Card.TLabel` / `CardMuted.TLabel` /
+  `Card.TCheckbutton` / `CardPlain.TFrame`（内部布局容器无外框，防框中框）。
+- **tk.Label 用 `fg=` 不是 `foreground=`**：ttk 换 tk 后所有 configure 报错
+  不会抛异常（tk 静默忽略未知选项），颜色悄悄丢了——检查截图才发现。
+- **clam 的 Frame 不支持状态映射**：原来 DropZone hover 用 `ttk::style map
+  -background` 是无效代码（Frame 无 active 态），换 tk.Frame 的
+  highlightbackground 后 hover 才真正生效。
+- **build_header 返回的 frame 从未被 pack**（旧代码就这样，标题栏一直没
+  显示过）：在 build_header 内部自行 pack(fill="x")。
+- **窗口截图验证**：BitBlt 截被遮挡窗口得到黑屏，`PrintWindow(hwnd, hdc, 2)`
+  （PW_RENDERFULLCONTENT）才能拿到真实内容；单脚本内「展示→PrintWindow→
+  存盘→销毁」避免后台进程时序竞争。

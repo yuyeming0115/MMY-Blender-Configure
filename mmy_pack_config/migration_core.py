@@ -86,6 +86,7 @@ class SourceSnapshot:
     include_datafiles: bool = False
     include_startup_scripts: bool = False
     include_app_templates: bool = False
+    include_bookmarks: bool = True
     include_history: bool = False
     workspaces_inventory_path: Path | None = None
 
@@ -391,10 +392,16 @@ def _profile_sources(snapshot: SourceSnapshot) -> list[tuple[Path, str, str, fro
                 frozenset(),
             )
         )
+    if snapshot.include_bookmarks:
+        # 书签是用户主动维护的常用文件夹（config/bookmarks.txt），不是历史
+        # 记录——它历史上误挂在 history 组件下，history 默认关闭导致书签
+        # 静默丢失，v1.6.1 起拆为独立组件并默认开启
+        sources.append(
+            (snapshot.config_dir / "bookmarks.txt", "payload/config/bookmarks.txt", "bookmarks", frozenset())
+        )
     if snapshot.include_history:
         sources.extend(
             [
-                (snapshot.config_dir / "bookmarks.txt", "payload/config/bookmarks.txt", "history", frozenset()),
                 (snapshot.config_dir / "recent-files.txt", "payload/config/recent-files.txt", "history", frozenset()),
             ]
         )
