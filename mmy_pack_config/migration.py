@@ -1092,9 +1092,17 @@ class MMY_OT_ExportConfig(_AsyncOperatorMixin, bpy.types.Operator):
 
     def execute(self, context):
         preferences = _get_preferences(context)
-        # 启动脚本有执行风险，只有用户在偏好设置中显式开启时才包含
+        # datafiles / 应用模板是纯数据，默认包含；
+        # 启动脚本会在 Blender 启动时执行，依赖旧版 API 的脚本迁移后可能报错，
+        # 所以仍以用户偏好为准（偏好默认已改为开启）
+        include_datafiles = bool(
+            preferences and preferences.migration_include_datafiles
+        )
         include_startup_scripts = bool(
             preferences and preferences.migration_include_startup_scripts
+        )
+        include_app_templates = bool(
+            preferences and preferences.migration_include_app_templates
         )
         output_dir = _default_output_dir(preferences)
 
@@ -1106,9 +1114,9 @@ class MMY_OT_ExportConfig(_AsyncOperatorMixin, bpy.types.Operator):
                 context,
                 output_dir,
                 include_presets=preferences.migration_include_presets if preferences else True,
-                include_datafiles=preferences.migration_include_datafiles if preferences else False,
+                include_datafiles=include_datafiles,
                 include_startup_scripts=include_startup_scripts,
-                include_app_templates=preferences.migration_include_app_templates if preferences else False,
+                include_app_templates=include_app_templates,
                 include_history=preferences.migration_include_history if preferences else False,
             )
         except Exception as exc:

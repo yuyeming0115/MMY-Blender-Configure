@@ -21,6 +21,7 @@ import queue
 import subprocess
 import sys
 import threading
+import traceback
 import tkinter as tk
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -85,19 +86,92 @@ def _enable_dpi_awareness() -> None:
         pass
 
 
-def make_root(title: str, geometry: str = "960x720") -> tk.Tk:
+def make_root(title: str, geometry: str = "1000x760") -> tk.Tk:
     """创建统一风格的主窗口（有拖拽库时用 TkinterDnD 根窗口）。"""
     _enable_dpi_awareness()
     root = TkinterDnD.Tk() if DND_AVAILABLE else tk.Tk()
     root.title(title)
     root.geometry(geometry)
-    root.minsize(880, 640)
+    root.minsize(860, 560)
     try:
         style = ttk.Style(root)
         style.theme_use("clam")  # 跨平台一致的外观
     except tk.TclError:  # pragma: no cover —— 极老 Tcl 缺 clam
         pass
     return root
+
+
+# ============================================================
+# 可滚动容器
+# ============================================================
+
+
+class ScrollPane(ttk.Frame):
+    """带竖向滚动条的容器，窗口再小也不会把内容挤到看不见的地方。
+
+    这是本工具的一个硬需求：结果卡片 pack 在最底部，而进度区会
+    ``expand=True`` 抢走全部剩余空间——不做滚动的话，小屏用户永远看不到
+    「导入成功」，看起来就像程序没反应。
+    """
+
+    def __init__(self, master: tk.Misc) -> None:
+        super().__init__(master)
+        self._canvas = tk.Canvas(
+            self,
+            highlightthickness=0,
+            borderwidth=0,
+            background=COLOR_CARD_BG,
+        )
+        self._bar = ttk.Scrollbar(
+            self, orient="vertical", command=self._canvas.yview
+        )
+        self._canvas.configure(yscrollcommand=self._on_scroll_set)
+        self._bar.pack(side="right", fill="y")
+        self._canvas.pack(side="left", fill="both", expand=True)
+
+        # 内容容器：嵌在 Canvas 里，随内容高度自动扩展
+        self.body = ttk.Frame(self._canvas, padding=14)
+        self._window = self._canvas.create_window(
+            (0, 0), window=self.body, anchor="nw"
+        )
+        self.body.bind(
+            "<Configure>", lambda _e: self._on_body_configure(), add="bind"
+        )
+        self._canvas.bind("<Configure>", self._on_canvas_configure)
+        # 滚轮支持（Windows 下 tkinter 默认不绑定）
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self._canvas.bind_all(sequence, self._on_wheel, add="bind")
+
+    def _on_scroll_set(self, first: str, last: str) -> None:
+        """滚到底时自动隐藏滚动条，避免长期占一条无用灰条。"""
+        self._bar.set(first, last)
+        self._bar.pack_forget() if first == "0.0" and last == "1.0" else self._bar.pack(
+            side="right", fill="y"
+        )
+
+    def _on_body_configure(self) -> None:
+        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event) -> None:  # noqa: ANN001
+        self._canvas.itemconfigure(self._window, width=event.width)
+
+    def _on_wheel(self, event) -> str:  # noqa: ANN001
+        if event.num == 4:
+            delta = -1
+        elif event.num == 5:
+            delta = 1
+        else:
+            delta = -1 if event.delta > 0 else 1
+        self._canvas.yview_scroll(delta, "units")
+        return "break"
+
+    def scroll_to(self, widget: tk.Misc) -> None:
+        """把指定控件滚动到可视区域（用于完成时露出结果卡片）。"""
+        self.body.update_idletasks()
+        offset = widget.winfo_rooty() - self._canvas.winfo_rooty()
+        total = max(1, self.body.winfo_height())
+        # 40px 视作控件自身高度的一部分，避免控件顶部被边缘切掉
+        self._canvas.yview_moveto(max(0.0, (offset - 40) / total))
 
 
 # ============================================================
@@ -277,12 +351,44 @@ class DropZone(ttk.Frame):
         ).pack(anchor="w")
 
         if self._drop:
-            for widget in (self, outer, self._path_label):
-                with contextlib.suppress(Exception):
-                    widget.drop_target_register(DND_FILES)
-            self.dnd_bind("<<Drop>>", self._on_drop)
-            outer.drop_target_register(DND_FILES)
-            outer.dnd_bind("<<Drop>>", self._on_drop)
+            self._bind_drop(self)
+
+    def _bind_drop(self, widget: tk.Misc) -> None:
+        """递归为 widget 及其所有子孙注册投放区。
+
+        tkdnd 只把事件投递给**光标下最深**的那个已注册控件。若只注册外层
+        Frame，光标落在中间的标签/按钮上时事件会被子控件吞掉而不冒泡，
+        表现为「有的地方能拖、有的地方没反应」。这里整棵子树都注册，
+        无论落在哪一块都能接住。
+        """
+        for target in self._walk(widget):
+            with contextlib.suppress(Exception):
+                target.drop_target_register(DND_FILES)
+                target.dnd_bind("<<Drop>>", self._on_drop)
+                target.dnd_bind("<<DragEnter>>", self._on_drag_enter)
+                target.dnd_bind("<<DragLeave>>", self._on_drag_leave)
+
+    def _walk(self, widget: tk.Misc) -> Iterable[tk.Misc]:
+        yield widget
+        for child in widget.winfo_children():
+            yield from self._walk(child)
+
+    def _on_drag_enter(self, event) -> None:  # noqa: ANN001
+        self._highlight(True)
+
+    def _on_drag_leave(self, event) -> None:  # noqa: ANN001
+        self._highlight(False)
+
+    def _highlight(self, active: bool) -> None:
+        color = COLOR_PRIMARY if active else "#ffffff"
+        try:
+            self.winfo_toplevel().tk.call(
+                "ttk::style", "map", "Drop.TFrame",
+                "-background", "active", color,
+                "-background", "!active", "#ffffff",
+            )
+        except Exception:  # noqa: BLE001 —— 高亮是纯装饰，失败不影响功能
+            pass
 
     @property
     def path(self) -> str:
@@ -305,22 +411,66 @@ class DropZone(ttk.Frame):
             self._on_path(chosen)
 
     def _on_drop(self, event) -> None:  # noqa: ANN001 - tkinter 事件对象
+        # tkinter 对事件回调里的异常只在 stderr 打一行；本工具经 pythonw 启动
+        # 没有控制台，任何异常都会表现为「拖进去完全没反应」。因此这里必须
+        # 全部兜住并弹窗，绝不允许静默失败。
         try:
-            raw = self.tk.splitlist(event.data)
-        except Exception:  # noqa: BLE001
-            raw = event.data
-        paths = parse_drop_paths(raw)
-        if not paths:
-            return
-        picked = first_matching_path(paths, self._want_directory)
-        if picked is None:
-            messagebox.showwarning(
-                "类型不匹配",
-                "需要的是" + ("文件夹" if self._want_directory else "文件")
-                + "，你拖入的内容类型不对。",
+            self._handle_drop(event)
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            messagebox.showerror(
+                "拖拽处理失败",
+                f"读取拖入内容时出错：\n\n{exc}\n\n请改用下方的「选择…」按钮。",
             )
-            return
-        self._on_path(picked)
+
+    def _handle_drop(self, event) -> None:
+        """多策略解析拖入数据，取第一个能命中真实路径的结果。
+
+        为什么不能只信一种：tkdnd 的 ``%D`` 替换**没有**用大括号包裹，
+        Tcl 层会把它当词列表处理——路径里有空格就断成两截，有反斜杠就
+        被当转义符吃掉。于是同一份 data 可能被解析成
+        ``['C:\\a b\\x.zip', 'D:\\y\\z.exe']``（正确）或
+        ``['C:abx.zip', 'D:y\\z.exe']``（反斜杠被吃），
+        而**只有磁盘上真实存在的那个才是对的**。
+
+        所以这里按「splitlist → 正则 → 原文」三种策略依次尝试，
+        并要求候选路径必须真实存在且类型匹配才采纳。
+        任何一步失败都不静默——最后弹窗告诉用户改用「选择…」按钮。
+        """
+        raw = getattr(event, "data", None)
+        candidates: list[str] = []
+
+        # 策略 1：官方推荐的 splitlist
+        try:
+            candidates.extend(parse_drop_paths(self.tk.splitlist(raw)))
+        except Exception:  # noqa: BLE001
+            pass
+        # 策略 2：花括号感知的正则（splitlist 不可用或结构被破坏时）
+        candidates.extend(parse_drop_paths(raw))
+        # 策略 3：整体当单个路径（Windows 上单文件无空格时最可靠）
+        text = str(raw or "").strip().strip("{}").strip()
+        if text:
+            candidates.append(text)
+
+        for candidate in candidates:
+            picked = first_matching_path([candidate], self._want_directory)
+            if picked is not None:
+                self._on_path(picked)
+                return
+
+        if not candidates:
+            messagebox.showwarning(
+                "没识别到文件",
+                "拖入的内容里没有可用的文件路径。\n\n请改用下方的「选择…」按钮。",
+            )
+        else:
+            want = "文件夹" if self._want_directory else "文件"
+            messagebox.showwarning(
+                "拖拽没能用上",
+                f"这里需要的是一个真实存在的{want}，但拖入的内容没能匹配上：\n\n"
+                + "\n".join(candidates[:5])
+                + "\n\n请改用下方的「选择…」按钮，效果完全一样。",
+            )
 
 
 class StageProgress(ttk.Frame):
@@ -407,11 +557,11 @@ class LogPanel(ttk.Frame):
 
     MAX_LINES = 5000
 
-    def __init__(self, master: tk.Misc) -> None:
+    def __init__(self, master: tk.Misc, height: int = 10) -> None:
         super().__init__(master)
         self._text = tk.Text(
             self,
-            height=10,
+            height=height,
             font=(MONO_FAMILY, MONO_SIZE),
             background=COLOR_LOG_BG,
             relief="solid",
@@ -440,7 +590,13 @@ class LogPanel(ttk.Frame):
 
 
 class ResultCard(ttk.Frame):
-    """结果卡片：成功/失败 + 明细 + 快捷动作按钮。"""
+    """结果卡片：成功/失败 + 明细 + 快捷动作按钮。
+
+    ``show(..., notify=True)`` 时额外弹一个模态提示框——**双保险**。
+    小白用户经常在任务跑完后去看 Blender 而不是盯着窗口；卡片可能被滚动
+    出视野，光靠卡片就又变成「好像没反应」。模态框能强制引起注意，
+    关掉后卡片依然在下方可查。
+    """
 
     def __init__(self, master: tk.Misc) -> None:
         super().__init__(master)
@@ -451,6 +607,21 @@ class ResultCard(ttk.Frame):
             child.destroy()
         self._body.pack_forget()
 
+    @property
+    def visible(self) -> bool:
+        return bool(self._body.winfo_ismapped())
+
+    def reveal(self) -> None:
+        """滚动祖先容器，让本卡片进入视野。"""
+        widget = self
+        while widget is not None:
+            widget.update_idletasks()
+            parent = widget.master
+            if isinstance(parent, ScrollPane):
+                parent.scroll_to(self)
+                return
+            widget = parent if isinstance(parent, ttk.Frame) else None
+
     def show(
         self,
         *,
@@ -459,10 +630,12 @@ class ResultCard(ttk.Frame):
         details: Iterable[tuple[str, str]] = (),
         message: str = "",
         actions: Iterable[tuple[str, Callable[[], None]]] = (),
+        notify: bool = False,
     ) -> None:
         self.clear()
         self._body.configure(relief="solid", borderwidth=1, padding=12)
         self._body.pack(fill="x", pady=(8, 0))
+        self.reveal()
 
         ttk.Label(
             self._body,
@@ -502,6 +675,16 @@ class ResultCard(ttk.Frame):
                 ttk.Button(bar, text=label, command=command, width=16).pack(
                     side="left", padx=(0, 8)
                 )
+
+        if notify:
+            self.root = self.winfo_toplevel()
+            summary = "\n".join(f"{k}：{v}" for k, v in details) or message
+            try:
+                messagebox.showinfo(
+                    title if ok else f"❌ {title}", summary or title, parent=self.root
+                )
+            except tk.TclError:  # pragma: no cover —— 无父窗口可用
+                messagebox.showinfo(title if ok else f"❌ {title}", summary or title)
 
 
 # ============================================================

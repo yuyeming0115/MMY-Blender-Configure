@@ -241,17 +241,25 @@ class MMYConfigPreferences(bpy.types.AddonPreferences):
 
     migration_include_datafiles: bpy.props.BoolProperty(
         name="默认包含数据文件",
-        default=False,
+        description="打包 portable/datafiles（贴图、字体、图标、笔刷等用户资源）。"
+        "这些都是纯数据文件，跨版本安全，默认开启",
+        default=True,
     )
 
     migration_include_startup_scripts: bpy.props.BoolProperty(
         name="默认包含启动脚本",
-        default=False,
+        description="打包 portable/scripts/startup（自定义 __init__.py、"
+        "应用模板等会在 Blender 启动时执行的代码）。"
+        "注意：启动脚本会随 Blender 自动运行，来源机器上的脚本若依赖旧版 API，"
+        "迁移后可能报错——排查完再默认开启",
+        default=True,
     )
 
     migration_include_app_templates: bpy.props.BoolProperty(
         name="默认包含应用模板",
-        default=False,
+        description="打包 portable/scripts/startup/bl_app_templates_user（新建文件模板）。"
+        "属于纯数据，默认开启",
+        default=True,
     )
 
     migration_include_history: bpy.props.BoolProperty(

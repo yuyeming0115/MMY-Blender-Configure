@@ -294,6 +294,59 @@ class DescribeProfileTests(unittest.TestCase):
         self.assertIn("已自动排除自迁移", text)
         self.assertNotIn("未记录来源目录", text)
 
+    def test_summary_warns_about_missing_folder_components(self):
+        """v1.5.1 之前导出的包不含 datafiles / scripts/startup。
+
+        迁移是整目录替换，不提示的话用户迁移完才发现目标目录少一截文件。
+        """
+        manifest = {
+            "source": {"blender_version": [5, 1, 0], "platform": "win32"},
+            "addons": [],
+            "components": ["preferences", "startup_file", "addons", "extensions"],
+        }
+        text = migrate.describe_profile(manifest, r"C:\B\blender.exe", None, None)
+        self.assertIn("不含以下内容", text)
+        self.assertIn("datafiles", text)
+        self.assertIn("scripts/startup", text)
+        self.assertIn("重新导出", text)
+
+    def test_summary_quiet_when_all_folders_present(self):
+        manifest = {
+            "source": {"blender_version": [5, 1, 0], "platform": "win32"},
+            "addons": [],
+            "components": [
+                "preferences",
+                "startup_file",
+                "addons",
+                "extensions",
+                "presets",
+                "datafiles",
+                "startup_scripts",
+            ],
+        }
+        text = migrate.describe_profile(manifest, r"C:\B\blender.exe", None, None)
+        self.assertNotIn("不含以下内容", text)
+
+
+class MissingFolderComponentTests(unittest.TestCase):
+    def test_all_reported_when_components_absent(self):
+        result = migrate.missing_folder_components({})
+        self.assertEqual(len(result), 3)
+        self.assertTrue(any("datafiles" in item for item in result))
+        self.assertTrue(any("scripts/startup" in item for item in result))
+
+    def test_datafiles_only_missing(self):
+        result = migrate.missing_folder_components(
+            {"components": ["presets", "startup_scripts"]}
+        )
+        self.assertEqual(result, ["数据文件 datafiles"])
+
+    def test_nothing_missing(self):
+        result = migrate.missing_folder_components(
+            {"components": ["presets", "datafiles", "startup_scripts"]}
+        )
+        self.assertEqual(result, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -50,6 +50,37 @@ class ParseDropPathsTests(unittest.TestCase):
             logic.parse_drop_paths(r"{C:\my configs\a.zip}"), [r"C:\my configs\a.zip"]
         )
 
+    def test_splitlist_result_is_accepted(self):
+        """回归：Tk.tk.splitlist() 返回的是 list。
+
+        v1.5.1 之前只接受 str，实际拖拽时抛
+        ``TypeError: expected string or bytes-like object, got 'list'``，
+        而异常发生在 tkinter 事件回调里被静默吞掉（pythonw 无控制台），
+        表现为「拖拽完全没反应」。
+        """
+        result = logic.parse_drop_paths(["E:/packs/profile.zip"])
+        self.assertEqual(result, ["E:/packs/profile.zip"])
+
+    def test_splitlist_result_with_spaces(self):
+        raw = [r"C:\my configs\a.zip", r"D:\b\c.exe"]
+        self.assertEqual(
+            logic.parse_drop_paths(raw), [r"C:\my configs\a.zip", r"D:\b\c.exe"]
+        )
+
+    def test_splitlist_result_strips_braces_and_blanks(self):
+        self.assertEqual(
+            logic.parse_drop_paths(["{C:\\a b\\x.zip}", "  ", ""]),
+            [r"C:\a b\x.zip"],
+        )
+
+    def test_tuple_input_also_accepted(self):
+        self.assertEqual(
+            logic.parse_drop_paths(("C:/a.zip",)), ["C:/a.zip"]
+        )
+
+    def test_none_is_safe(self):
+        self.assertEqual(logic.parse_drop_paths(None), [])
+
 
 class FirstMatchingPathTests(unittest.TestCase):
     def setUp(self):

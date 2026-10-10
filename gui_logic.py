@@ -15,24 +15,47 @@ from pathlib import Path
 _TOKEN_RE = re.compile(r"\{[^}]*\}|[^\s{}]+")
 
 
-def parse_drop_paths(data: str) -> list[str]:
-    """解析拖拽事件的 data 字符串为路径列表。
+def parse_drop_paths(data: str | Iterable[str] | None) -> list[str]:
+    """解析拖拽事件的 data 为路径列表。
+
+    入参有两种形态，都必须支持：
+
+    - ``str``：原始 Tcl list 字符串。tkdnd 的 ``%D`` **没有**用大括号包裹，
+      路径里的空格会成为词分隔符，所以带空格的路径必须靠花括号保护，
+      形如 ``"{C:\\\\a b\\\\x.zip} {D:\\\\y\\\\z.exe}"``；花括号本身要剥掉。
+    - ``list[str]``：``Tk.tk.splitlist()`` 的返回值。**这是最常见的形态**，
+      若按 str 处理会抛 ``TypeError: expected string or bytes-like object``。
+
+    两种形态都只做「去壳 + 去空白」，不做存在性判断——那是
+    :func:`first_matching_path` 的职责。
 
     >>> parse_drop_paths("{C:\\\\my configs\\\\a.zip} {D:\\\\b\\\\c.exe}")
     ['C:\\\\my configs\\\\a.zip', 'D:\\\\b\\\\c.exe']
+    >>> parse_drop_paths(["C:/x/a.zip", "D:/b/c.exe"])
+    ['C:/x/a.zip', 'D:/b/c.exe']
     >>> parse_drop_paths("")
+    []
+    >>> parse_drop_paths(None)
     []
     """
     if not data:
         return []
-    paths: list[str] = []
-    for token in _TOKEN_RE.findall(data):
-        if token.startswith("{") and token.endswith("}"):
-            token = token[1:-1]
-        token = token.strip()
-        if token:
-            paths.append(token)
-    return paths
+    # splitlist() 的结果已是列表，逐项清洗即可，不必再过正则
+    if isinstance(data, (list, tuple)):
+        return _clean_paths(data)
+    return _clean_paths(_TOKEN_RE.findall(str(data)))
+
+
+def _clean_paths(items: Iterable[str]) -> list[str]:
+    """逐项剥掉 Tcl 花括号、去首尾空白，丢弃空项。"""
+    cleaned: list[str] = []
+    for item in items:
+        text = str(item).strip()
+        if text.startswith("{") and text.endswith("}"):
+            text = text[1:-1].strip()
+        if text:
+            cleaned.append(text)
+    return cleaned
 
 
 def first_matching_path(

@@ -59,25 +59,32 @@
 
 ```
 gui_logic.py              纯逻辑，零第三方依赖（关键：可被无 tkinter 的解释器测试）
-├─ parse_drop_paths()     拖拽数据 → 路径列表
+├─ parse_drop_paths()     拖拽数据 → 路径列表（同时吃 str 与 splitlist 的 list）
 ├─ first_matching_path()  路径筛选（目录/文件/存在性）
 └─ explain_error()        技术错误 → 小白能懂的「原因 + 怎么办」
 
-gui_kit.py                公共 UI 组件（两个入口共用，依赖 tkinter）
+gui_kit.py                公共 UI 组件（两个标签页共用，依赖 tkinter）
 ├─ DND_AVAILABLE          tkinterdnd2 可用性探测（模块级常量）
 ├─ make_root()            按可用性返回 TkinterDnD.Tk() 或 tk.Tk()
-├─ DropZone               投放区：拖拽 + 点击双通道
+├─ ScrollPane             带滚动条的内容容器（保证小屏也看得到结果卡片）
+├─ DropZone               投放区：拖拽 + 点击双通道（整棵子树注册 drop）
 ├─ StageProgress          阶段进度：步骤列表 + 当前步高亮 + 可选百分比
-├─ LogPanel               日志面板：stdout 重定向（_LineEmitter 逐行缓冲）
-├─ ResultCard             结果卡片：成功/失败 + 打开报告/目录按钮
+├─ LogPanel               日志面板：stdout 重定向（_StdoutTee 逐行缓冲）
+├─ ResultCard             结果卡片：成功/失败 + 打开报告/目录按钮 + 完成弹窗
 ├─ TaskRunner             子线程 + queue + root.after 轮询（GUI 不阻塞）
 └─ _StdoutTee             逐行缓冲的 stdout 替身（兜住 pythonw 的 None 流）
 
-mmy_migrate_gui.py        迁移 GUI 入口（双投放区）
-mmy_pack_gui.py           打包 GUI 入口（单投放区）
-run_migrate_gui.bat       双击启动器（沿用解释器探测逻辑）
-run_pack_gui.bat          同上
+mmy_tool_gui.py           单一GUI 入口，双标签页
+├─ ToolApp                双页签主窗口（每个页签独立滚动容器 + 独立线程）
+├─ MigratePage            「配置迁移」页（双投放区）
+└─ PackPage               「配置打包」页（单投放区）
+run_mmy_tool.bat          唯一双击启动器（解释器探测 + tkinterdnd2 自检）
 ```
+
+**为什么合并成单文件**：迁移和打包是同一件事的两端（导出 → 迁移），
+用户心智里是一个工具，不该是两个 .py + 两个 .bat。合并后文件数从
+7 个降到 4 个（gui_logic / gui_kit / mmy_tool_gui / run_mmy_tool.bat），
+且两侧共用同一套组件与滚动逻辑，视觉与行为天然一致。
 
 **为什么把逻辑与 UI 拆开**：`tkinter` 并非所有 Python 都有（本机 PATH 首个
 解释器就没有）。逻辑与 UI 同文件会导致「无 tkinter 环境连纯函数都测不了」，
@@ -252,3 +259,101 @@ progress(stage_key: str, message: str, ratio: float | None = None) -> None
 | 日志区不支持搜索 | 大日志（>5000 行）自动滚动，不做虚拟滚动 |
 | 迁移不可中途取消 | 长任务中途取消会留下不确定状态，仅支持「关闭前确认」 |
 | exe 打包另计 | `migration_core` 是运行时动态加载，PyInstaller 需额外配置，属后续步骤 |
+
+---
+
+## 11. v1.5.2 真机测试反馈与根因（重要）
+
+首版 GUI 交付后用户实测报三个问题。三个都**不是需求没做**，而是各自有
+独立的根因，且有两个属于「静默失败」——表现与「程序没反应」完全一样，
+最容易被误判成环境问题。
+
+### 11.1 拖拽完全没反应
+
+**根因**：`_on_drop` 里 `self.tk.splitlist(event.data)` 返回的是 **list**，
+而`parse_drop_paths()` 只接受 `str`，执行 `re.findall(list)` 直接抛
+`TypeError: expected string or bytes-like object, got 'list'`。
+
+**为什么静默**：这个异常发生在 tkinter 事件回调里，tkinter 只往 `stderr`
+打一行就继续跑。本工具经 `pythonw.exe` 启动**没有控制台**，`stderr` 无处可去；
+而 `<<Drop>>` 的处理函数一抛异常就不会再往下执行——于是既没有路径入参、
+也没有任何提示，用户看到的现象就是「拖进去什么都没发生」。
+
+**修复**：
+1. `parse_drop_paths()` 同时接受 `str` 与 `Iterable[str]`，内部统一走
+   `_clean_paths()` 剥花括号、去空白。
+2. `DropZone._on_drop` 拆成「薄壳 + `_handle_drop`」：薄壳全程 `try` 兜底，
+   任何异常都弹窗 + `traceback.print_exc()`，**禁止静默失败**。
+
+**顺带发现的风险**（比原bug 更隐蔽）：tkdnd 的 `%D` 替换在
+`_subst_format_dnd` 里是**裸 `%D`，没有大括号包裹**。这意味着 Tcl 层把
+drop 数据当词列表处理——路径含空格会断成两截，含反斜杠可能被当转义符吃掉。
+同���份 data 可能解析成 `C:\a b\x.zip`（对）或 `C:abx.zip`（错）。
+
+**防御设计**：`_handle_drop` 不信任任何单一解析策略，而是
+`splitlist → 正则 → 原文整串` 依次展开候选，**用「路径必须真实存在且
+类型匹配」做筛选**。只有磁盘上真的存在的那个才是对的。这条规则比任何
+正则都可靠，因为用户的目标路径本来就是已知的具体文件。
+
+**另一个真问题**：tkdnd 只把事件投递给**光标下最深**的已注册控件。原实现
+只注册了 2 层Frame，光标落在中间的标签或「选择…」按钮上时事件被子控件
+吞掉而不冒泡——表现为「有的地方能拖、有的地方不能」。改为 `_bind_drop()`
+递归注册整棵子树。
+
+### 11.2 导入完成没有提示
+
+**根因**：`ResultCard` pack 在 `outer` 最末尾，而进度区是
+`fill="both", expand=True`、日志面板 `height=10`。tkinter 的 pack 按添加
+顺序分配空间，最后添加的卡片被前面的 expand 控件挤出可视区——**卡片确实
+生成了，只是被推到窗口外看不见**，配合 `pythonw` 无控制台，用户自然理解成
+「没跑完」。
+
+**修复（三重保险，缺一不可）**：
+1. **可滚动容器 `ScrollPane`**：Canvas + Scrollbar，内容再长也能滚到。
+   切页签时重新计算滚动区域。
+2. **`ResultCard.reveal()`**：卡片展开后沿父链找到 `ScrollPane` 并
+   `scroll_to` 把自己带进视野。
+3. **`notify=True` 弹模态提示**：完成/失败都弹窗。这条针对的是
+   「用户跑完就去开 Blender 了、根本没盯窗口」的真实行为——
+   卡片滚动得到 ≠ 用户看得到，模态框才能强制引起注意。
+
+### 11.3 datafiles 与 scripts/startup 没传过去
+
+**根因**：**不在迁移侧，而在导出侧**。`preferences.py` 里
+`migration_include_datafiles` / `migration_include_startup_scripts`
+默认是 `False`，于是配置包的 `components` 列表里根本没有
+`datafiles` / `startup_scripts`，包里没有这些文件，迁移自然无从谈起。
+
+迁移本身是**整目录原子替换**，包里有什么就装什么——它是忠实的，
+问题在于源头就没打包。而且这类缺失天然是静默的：目标目录少一截文件，
+不报错、不警告，用户往往几天后才发现。
+
+**修复**：
+1. 三个偏好的默认值改为 `True`，并写清各自的性质差异：
+   `datafiles` 与应用模板是**纯数据**（贴图/字体/笔刷/模板），跨版本安全；
+   `startup_scripts` 是**会在 Blender 启动时执行的代码**，若依赖旧版 API
+   迁移后可能报错——所以仍在 description 里明确提示风险，让用户知情选择，
+   而不是默默替他关掉。
+2. 导出算子`MMY_OT_ExportConfig.execute` 里显式读取这三个属性，
+   避免 `preferences` 为 `None` 时又回落成 `False`。
+3. **新增检测与告知**：`migrate.missing_folder_components()` 从 manifest 的
+   `components` 反查缺失的文件夹级组件，`describe_profile` 在确认信息里
+   逐条列出并给出「回源 Blender 勾选后重新导出」的指引，
+   `_on_migration_done` 的结果卡片也带一行「未包含」。
+   **旧包不会因为这次修复自动补齐**——它们是真的没有这些文件，
+   工具只能如实告知并给出补救路径。
+
+### 11.4 测试策略的教训
+
+这三个 bug 有一个共同点：**单测全绿，但功能实际不可用**。
+纯逻辑层的 `parse_drop_paths` 单测用的是手写的 `str`，而真实输入是 `list`；
+结果卡片的 `visible` 属性在窗口 `withdraw()` 状态下测不准。
+
+因此 GUI 冒烟测试（`tests/smoke_gui.py`）改成**驱动真实 Tk 解析链路**：
+用 `Tk.tk.splitlist()` 产出真实形态喂给 `DropZone._handle_drop()`，
+用带空格 + 中文的名字（最容易触发 Tcl 转义问题的形态），
+并在真实窗口里跑通 `ResultCard.show()` 后检查 `visible`。
+这类"造真实输入"的测试比"造理想输入"更能挡住回归。
+
+**注意**：不能用 `event generate -data <路径>` 来模拟——那会再过一层
+Tcl 解析，把路径里的反斜杠吃掉，测出来的是构造错误而非产品行为。

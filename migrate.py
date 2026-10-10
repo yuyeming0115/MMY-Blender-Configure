@@ -134,6 +134,48 @@ def source_user_root(manifest: dict) -> str:
     return str((manifest.get("source") or {}).get("user_root") or "")
 
 
+# 组件 → 它对应的 portable 相对路径（用于把「包里没有」翻译成人话）
+COMPONENT_LABELS: dict[str, str] = {
+    "preferences": "偏好设置 userpref.blend",
+    "startup_file": "启动文件 startup.blend",
+    "addons": "传统插件 scripts/addons",
+    "extensions": "扩展 extensions",
+    "presets": "预设 scripts/presets",
+    "datafiles": "数据文件 datafiles",
+    "startup_scripts": "启动脚本 scripts/startup",
+    "app_templates": "应用模板 bl_app_templates_user",
+    "history": "书签与最近文件",
+}
+
+# 用户明确关心的「文件夹级」组件：缺失时必须告诉他，而不是静默少拷一份
+FOLDER_COMPONENTS: tuple[str, ...] = (
+    "datafiles",
+    "startup_scripts",
+    "presets",
+)
+
+
+def missing_folder_components(manifest: dict) -> list[str]:
+    """返回配置包中缺失的文件夹级组件（中文可读）。
+
+    历史版本的导出默认值不含 datafiles / startup_scripts，导致迁移后目标
+    portable 目录少一截文件，而用户完全不知情。这里显式检测并上报。
+
+    >>> missing_folder_components({"components": ["preferences", "datafiles"]})
+    ['启动脚本 scripts/startup', '预设 scripts/presets']
+    >>> missing_folder_components({"components": ["preferences"]})
+    ['数据文件 datafiles', '启动脚本 scripts/startup', '预设 scripts/presets']
+    >>> missing_folder_components({})
+    ['数据文件 datafiles', '启动脚本 scripts/startup', '预设 scripts/presets']
+    """
+    present = set(manifest.get("components") or ())
+    return [
+        COMPONENT_LABELS[name]
+        for name in FOLDER_COMPONENTS
+        if name not in present
+    ]
+
+
 def preflight_target(manifest: dict, executable_path) -> dict:
     """迁移前用目标探针读出真实信息：版本、用户目录、便携模式、版本合法性。
 
@@ -224,6 +266,15 @@ def describe_profile(
             "   然后重新运行。",
             "",
         ]
+
+    # 配置包漏掉的文件夹：必须在动手前讲清楚，否则迁移完才发现少东西
+    missing = missing_folder_components(manifest)
+    if missing:
+        lines.append("⚠ 配置包中不含以下内容，迁移后目标目录将没有它们：")
+        lines.extend(f"   · {item}" for item in missing)
+        lines.append("   → 若需要，请回到源 Blender，在插件偏好设置里勾选后重新导出。")
+        lines.append("")
+
     lines.append("目标 Blender 的现有配置将备份，可随时回滚。")
     if preflight and preflight.get("source_user_root"):
         lines.append(f"  来源配置目录：{preflight['source_user_root']}（已自动排除自迁移）")
