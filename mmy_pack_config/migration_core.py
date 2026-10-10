@@ -32,6 +32,27 @@ RECOVERY_DIR_NAME = "MMY_Migration_Recovery"
 PROBE_MARKER = "MMY_PROBE_JSON:"
 MIN_FREE_SPACE_BYTES = 128 * 1024 * 1024
 
+# v1.5.0 工作区级布局恢复：出厂工作区是新版 UI 的载体，
+# donor 模式下只移植名单之外的「自定义工作区」。
+FACTORY_WORKSPACE_NAMES = frozenset(
+    {
+        "Layout",
+        "Modeling",
+        "Sculpting",
+        "UV Editing",
+        "Texture Paint",
+        "Shading",
+        "Rendering",
+        "Compositing",
+        "Geometry Nodes",
+        "Scripting",
+        "Motion Tracking",
+        "Masking",
+        "VFX",
+        "Video Editing",
+    }
+)
+
 _STALE_ARTIFACT_PATTERN = re.compile(
     r"^\.[^\s].*\.mmy_(old|stage|failed|restore|removed)_"
 )
@@ -65,6 +86,7 @@ class SourceSnapshot:
     include_startup_scripts: bool = False
     include_app_templates: bool = False
     include_history: bool = False
+    workspaces_inventory_path: Path | None = None
 
 
 @dataclass
@@ -85,6 +107,7 @@ class MigrationResult:
     warnings: list[str] = field(default_factory=list)
     report_html_path: Path | None = None
     keymap_lost_count: int = 0
+    workspaces_restored: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -311,6 +334,27 @@ def _json_dump(data: Any) -> str:
 _APP_TEMPLATES_DIR_NAME = "bl_app_templates_user"
 
 
+def plan_startup_mode(
+    source_version: Iterable[int],
+    target_version: Iterable[int],
+    has_workspace_inventory: bool,
+) -> str:
+    """决定启动文件策略：legacy 整文件安装 / donor 工作区级移植。
+
+    同主.次版本整拷 100% 安全（保留用户自定义布局）；跨次版本时旧版
+    startup.blend 的布局快照会遮蔽新版 UI，改为保留新版默认工作区、
+    仅追加旧配置中的自定义工作区。无工作区清单（v1.4 及更早配置包）
+    无法做选择性移植，退回 legacy。
+    """
+    if not has_workspace_inventory:
+        return "legacy"
+    source = normalize_version(source_version)
+    target = normalize_version(target_version)
+    if target[:2] == source[:2]:
+        return "legacy"
+    return "donor"
+
+
 def _profile_sources(snapshot: SourceSnapshot) -> list[tuple[Path, str, str, frozenset[str]]]:
     """返回 (来源路径, 归档基路径, 组件名, 顶层排除子目录) 列表。
 
@@ -453,6 +497,30 @@ def create_profile(snapshot: SourceSnapshot, output_dir: Path) -> ProfileResult:
                 "keymap_fallback",
             )
 
+            workspaces_meta: dict[str, Any] = {}
+            inventory_path = snapshot.workspaces_inventory_path
+            if inventory_path and Path(inventory_path).is_file():
+                add_file(
+                    zf,
+                    Path(inventory_path),
+                    "fallback/workspaces.json",
+                    "workspaces",
+                )
+                try:
+                    inventory_data = json.loads(
+                        Path(inventory_path).read_text(encoding="utf-8")
+                    )
+                    items = inventory_data.get("items") or []
+                    workspaces_meta = {
+                        "file": "fallback/workspaces.json",
+                        "count": len(items),
+                        "custom_count": sum(
+                            1 for item in items if not item.get("factory")
+                        ),
+                    }
+                except (OSError, json.JSONDecodeError) as inventory_exc:
+                    warnings.append(f"工作区清单解析失败：{inventory_exc}")
+
             manifest = {
                 "schema_version": SCHEMA_VERSION,
                 "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -472,6 +540,7 @@ def create_profile(snapshot: SourceSnapshot, output_dir: Path) -> ProfileResult:
                     "fingerprint_file": "fallback/keymap_fingerprint.json",
                     "export_file": "fallback/keymap.py",
                 },
+                "workspaces": workspaces_meta,
                 "files": files,
                 "warnings": warnings,
             }
@@ -672,6 +741,20 @@ def extract_directory_backup(
     except Exception:
         shutil.rmtree(staging_root, ignore_errors=True)
         raise
+
+
+def move_across_drives(src: Path, dst: Path) -> None:
+    """移动文件/目录，兼容跨磁盘场景。
+
+    Windows 上 ``os.replace`` 无法跨盘（抛 WinError 17「系统无法将文件移到
+    不同的磁盘驱动器」）。同一磁盘走原子 rename；跨盘退化为 ``shutil.move``
+    （复制后删除）。配置包与目标 Blender 常不在同一盘（例如包在 U 盘/E 盘、
+    Blender 装在 C 盘），此处必须容错。
+    """
+    try:
+        os.replace(src, dst)
+    except OSError:
+        shutil.move(str(src), str(dst))
 
 
 def atomic_install(staging_root: Path, target_root: Path, run_id: str) -> Path | None:
@@ -889,6 +972,8 @@ def run_target_audit(
     report_path: Path,
     expected_user_root: Path,
     timeout: int = 300,
+    donor_startup: Path | None = None,
+    workspaces_inventory: Path | None = None,
 ) -> dict[str, Any]:
     command = [
         str(target_executable),
@@ -904,6 +989,9 @@ def run_target_audit(
         str(report_path),
         str(expected_user_root),
     ]
+    # v1.5.0 donor 模式：把工作区级布局恢复所需的两个文件传给审计 worker
+    if donor_startup is not None and workspaces_inventory is not None:
+        command.extend([str(donor_startup), str(workspaces_inventory)])
     environment = _blender_subprocess_env()
     environment["MMY_MIGRATION_AUDIT"] = "1"
     environment["MMY_MIGRATION_EXPECTED_ROOT"] = str(expected_user_root)
@@ -1136,6 +1224,13 @@ def _install_profile(
 ) -> MigrationResult:
     source_version = normalize_version(source_version)
 
+    # v1.5.0 启动文件策略：跨次版本走 donor（工作区级移植），否则 legacy 整文件安装
+    startup_mode = plan_startup_mode(
+        source_version,
+        target_version,
+        bool(profile.manifest.get("workspaces")),
+    )
+
     payload_size = sum(
         int(item["size"])
         for item in profile.manifest["files"]
@@ -1164,6 +1259,7 @@ def _install_profile(
         "target_existed": target_root.exists(),
         "profile_path": str(profile.path),
         "backup": backup,
+        "startup_mode": startup_mode,
     }
     _write_recovery_metadata(recovery_path, metadata)
 
@@ -1182,6 +1278,33 @@ def _install_profile(
             raise MigrationError("目标 Blender 在迁移准备期间被打开，请关闭后重试")
         old_root = atomic_install(staging_root, target_root, run_id)
         swapped = True
+
+        # v1.5.0 donor 模式：payload 中的 startup.blend 改作"捐赠文件"，
+        # 不再直接安装为启动文件（否则会遮蔽新版默认工作区的新 UI）。
+        donor_startup_path: Path | None = None
+        workspaces_inventory_path: Path | None = None
+        if startup_mode == "donor":
+            installed_startup = target_root / "config" / "startup.blend"
+            donor_startup_path = recovery_dir / "donor_startup.blend"
+            if installed_startup.is_file():
+                # recovery_dir 常与 target_root 不同盘（配置包在 E 盘/U 盘、
+                # Blender 在 C 盘），必须走跨盘安全的移动
+                move_across_drives(installed_startup, donor_startup_path)
+            # 恢复目标自己的启动文件（新版默认布局）；用 copy2 而非 move，
+            # 保持 old_root 原样，确保审计失败回滚后逐字节一致
+            previous_startup = (
+                old_root / "config" / "startup.blend" if old_root else None
+            )
+            if previous_startup and previous_startup.is_file():
+                shutil.copy2(previous_startup, installed_startup)
+            inventory_candidate = fallback_root / "workspaces.json"
+            if inventory_candidate.is_file():
+                workspaces_inventory_path = inventory_candidate
+            else:
+                # 防御：清单缺失时退化为 legacy 语义，不阻断迁移
+                print("[MMY Migration] 配置包缺少工作区清单，启动文件按 legacy 处理")
+                donor_startup_path = None
+
         metadata["status"] = "validating"
         _write_recovery_metadata(recovery_path, metadata)
 
@@ -1194,6 +1317,8 @@ def _install_profile(
             report_path,
             target_root,
             timeout=audit_timeout,
+            donor_startup=donor_startup_path,
+            workspaces_inventory=workspaces_inventory_path,
         )
         finalize_atomic_install(old_root)
         metadata["status"] = report["status"]
@@ -1219,6 +1344,9 @@ def _install_profile(
             report_html_path=html_report_path,
             keymap_lost_count=int(
                 (report.get("keymap") or {}).get("lost_count", 0)
+            ),
+            workspaces_restored=list(
+                (report.get("workspaces") or {}).get("restored") or []
             ),
         )
     except Exception as exc:
@@ -1485,6 +1613,29 @@ def build_migration_report_html(
                     + "</ul>"
                 )
 
+    workspaces_html = ""
+    workspaces = report.get("workspaces")
+    if workspaces:
+        mode = workspaces.get("mode", "")
+        restored = workspaces.get("restored") or []
+        skipped = workspaces.get("skipped") or []
+        ws_errors = workspaces.get("errors") or []
+        if mode == "donor":
+            workspaces_html = f"""
+  <h2>工作区恢复（donor 模式：保留新版默认布局）</h2>
+  <p>已恢复 <b>{len(restored)}</b> 个自定义工作区：
+  {("、".join(_esc(name) for name in restored)) if restored else "无"}</p>"""
+            if skipped:
+                workspaces_html += f"""
+  <p class="muted">跳过 {len(skipped)} 个（目标已存在或捐赠文件中缺失）：
+  {"、".join(_esc(name) for name in skipped)}</p>"""
+            if ws_errors:
+                workspaces_html += (
+                    "\n  <p>恢复异常（不影响其余迁移内容）：</p><ul>"
+                    + "".join(f"<li>{_esc(item)}</li>" for item in ws_errors)
+                    + "</ul>"
+                )
+
     disabled_html = ""
     if disabled:
         disabled_html = f"""
@@ -1551,6 +1702,7 @@ def build_migration_report_html(
   <p class="meta">目标用户目录：<code>{_esc(target_root)}</code></p>
   <div class="card">
     {error_html}
+    {workspaces_html}
     {disabled_html if disabled_html else '<h2>插件检查</h2><p>✅ 无需禁用的插件</p>' if status in {'success', 'degraded'} else ''}
     {keymap_html}
     {paths_html}

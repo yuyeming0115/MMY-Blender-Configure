@@ -1,5 +1,12 @@
 """Blender 跨版本配置迁移的 Operator、备份记录与当前会话采集逻辑。
 
+v1.5.0 变更（工作区级布局恢复）：
+  - 导出端采集工作区清单（名称/是否出厂/区域类型）随配置包携带
+  - 跨次版本迁移启动文件改走 donor 模式：保留目标新版默认工作区布局，
+    仅追加旧配置中的自定义工作区（startup.blend 改作捐赠文件）
+  - 同主.次版本及 v1.4 旧配置包维持 legacy 整文件安装（行为不变）
+  - 预检/确认页展示启动文件策略；迁移结果与 HTML 报告列出恢复明细
+
 v1.3.0 变更：
   - 迁移改为两阶段：预检（只读）→ 确认页 → 执行（M1）
   - 迁移组件按风险分级展示，启动脚本需二次确认（M2）
@@ -36,6 +43,7 @@ import bpy
 from . import utils
 from .migration_core import (
     RECOVERY_DIR_NAME,
+    FACTORY_WORKSPACE_NAMES,
     MigrationError,
     SourceSnapshot,
     cleanup_stale_migration_artifacts,
@@ -48,6 +56,7 @@ from .migration_core import (
     extract_portable_backup,
     find_blender_executables,
     list_backup_entries,
+    plan_startup_mode,
     predict_addon_compatibility,
     read_profile_manifest,
     restore_recovery,
@@ -247,6 +256,38 @@ def collect_keymap_fingerprint() -> dict:
     return {"schema_version": 2, "items": items}
 
 
+def collect_workspace_inventory() -> dict:
+    """采集当前会话工作区清单（GUI 模式，供 donor 模式选择性移植）。
+
+    每个工作区记录：名称 / 是否出厂工作区 / 区域类型摘要。
+    donor 模式只移植 factory=False 的自定义工作区，出厂工作区保持
+    目标版本默认布局（新版 UI 的载体），避免旧布局快照遮蔽新 UI。
+    """
+    items = []
+    try:
+        workspaces = list(bpy.data.workspaces)
+    except Exception as exc:
+        print(f"[MMY Migration] 读取工作区清单失败: {exc}")
+        return {"schema_version": 1, "items": []}
+    for workspace in workspaces:
+        area_types: set[str] = set()
+        try:
+            for screen in workspace.screens:
+                for area in screen.areas:
+                    area_types.add(str(getattr(area, "ui_type", "") or area.type))
+        except Exception as exc:
+            print(f"[MMY Migration] 读取工作区 {workspace.name} 布局失败: {exc}")
+        items.append(
+            {
+                "name": workspace.name,
+                "factory": workspace.name in FACTORY_WORKSPACE_NAMES,
+                "area_types": sorted(area_types),
+            }
+        )
+    items.sort(key=lambda entry: entry["name"])
+    return {"schema_version": 1, "items": items}
+
+
 def _prepare_source_snapshot(
     context,
     output_dir: str,
@@ -264,6 +305,7 @@ def _prepare_source_snapshot(
     work_dir = Path(tempfile.mkdtemp(prefix="mmy_migration_", dir=str(output)))
     keymap_export = work_dir / "keymap.py"
     keymap_fingerprint = work_dir / "keymap_fingerprint.json"
+    workspaces_inventory = work_dir / "workspaces.json"
     try:
         result = bpy.ops.preferences.keyconfig_export(
             filepath=str(keymap_export),
@@ -274,6 +316,15 @@ def _prepare_source_snapshot(
         fingerprint = collect_keymap_fingerprint()
         keymap_fingerprint.write_text(
             json.dumps(fingerprint, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        workspaces_inventory.write_text(
+            json.dumps(
+                collect_workspace_inventory(),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
             encoding="utf-8",
         )
         binary_path = Path(getattr(bpy.app, "binary_path", "") or sys.executable)
@@ -290,6 +341,7 @@ def _prepare_source_snapshot(
             keymap_export_path=keymap_export,
             keymap_fingerprint_path=keymap_fingerprint,
             keymap_item_count=len(fingerprint["items"]),
+            workspaces_inventory_path=workspaces_inventory,
             addons=collect_addon_inventory(),
             include_presets=include_presets,
             include_datafiles=include_datafiles,
@@ -755,10 +807,12 @@ def _run_precheck(
         source_version = manifest.get("source", {}).get("blender_version", [])
         addons = manifest.get("addons", [])
         components = manifest.get("components", [])
+        has_workspace_inventory = bool(manifest.get("workspaces"))
     else:
         source_version = list(snapshot.version)
         addons = snapshot.addons
         components = []
+        has_workspace_inventory = True
         if snapshot.include_presets:
             components.append("presets")
         if snapshot.include_datafiles:
@@ -792,6 +846,9 @@ def _run_precheck(
                     "target_root": str(target_root),
                     "existing_mb": round(directory_size(target_root) / 1024 / 1024, 1),
                     "incompatible": predict_addon_compatibility(addons, target_version),
+                    "startup_mode": plan_startup_mode(
+                        source_version, target_version, has_workspace_inventory
+                    ),
                 }
             )
         except Exception as exc:
@@ -866,6 +923,16 @@ class MMY_OT_MigrationConfirm(
                     text=f"目标已有配置 {entry.get('existing_mb', 0)} MB（迁移前自动备份，可随时恢复）",
                     icon='RECOVER_LAST',
                 )
+                if entry.get("startup_mode") == "donor":
+                    box.label(
+                        text="启动文件：保留新版默认布局，自动恢复自定义工作区",
+                        icon='WORKSPACE',
+                    )
+                else:
+                    box.label(
+                        text="启动文件：整文件迁移（同版本级保真）",
+                        icon='FILE_BLEND',
+                    )
                 incompatible = entry.get("incompatible") or []
                 if incompatible:
                     warn = box.column()
@@ -968,9 +1035,10 @@ class MMY_OT_MigrationConfirm(
                         detail += f"，丢失 {migration.keymap_lost_count} 条快捷键"
                     status_parts.append(f"{target_label}：降级（{detail}）")
                 else:
-                    status_parts.append(
-                        f"{target_label}：成功（{version_string(migration.target_version)}）"
-                    )
+                    note = f"成功（{version_string(migration.target_version)}）"
+                    if migration.workspaces_restored:
+                        note += f"，恢复 {len(migration.workspaces_restored)} 个自定义工作区"
+                    status_parts.append(f"{target_label}：{note}")
             else:
                 status_parts.append(f"{target_label}：失败（{outcome.error}）")
         if preferences:

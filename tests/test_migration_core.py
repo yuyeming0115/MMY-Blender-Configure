@@ -302,6 +302,268 @@ class MigrationCoreTest(unittest.TestCase):
         )
         self.assertTrue((result.recovery_dir / "target_before.zip").is_file())
 
+    def test_plan_startup_mode_branches(self):
+        # 无工作区清单（v1.4 旧包）→ legacy
+        self.assertEqual(
+            core.plan_startup_mode((5, 1, 0), (5, 3, 0), False), "legacy"
+        )
+        # 同主.次版本 → legacy（整拷 100% 安全）
+        self.assertEqual(
+            core.plan_startup_mode((5, 1, 0), (5, 1, 9), True), "legacy"
+        )
+        # 跨次版本 + 有清单 → donor
+        self.assertEqual(
+            core.plan_startup_mode((5, 1, 0), (5, 2, 0), True), "donor"
+        )
+        self.assertEqual(
+            core.plan_startup_mode((5, 1, 9), (5, 3, 1), True), "donor"
+        )
+
+    def test_profile_includes_workspace_inventory(self):
+        inventory = self.root / "workspaces.json"
+        inventory.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "items": [
+                        {"name": "Layout", "factory": True, "area_types": ["VIEW_3D"]},
+                        {
+                            "name": "雕刻",
+                            "factory": False,
+                            "area_types": ["VIEW_3D", "PROPERTIES"],
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = core.create_profile(
+            self.snapshot(workspaces_inventory_path=inventory), self.output
+        )
+        with zipfile.ZipFile(result.path) as archive:
+            names = set(archive.namelist())
+            self.assertIn("fallback/workspaces.json", names)
+        self.assertEqual(result.manifest["workspaces"]["count"], 2)
+        self.assertEqual(result.manifest["workspaces"]["custom_count"], 1)
+        self.assertIn("workspaces", result.manifest["components"])
+
+    def test_profile_without_inventory_keeps_empty_workspaces_meta(self):
+        result = core.create_profile(self.snapshot(), self.output)
+        self.assertEqual(result.manifest.get("workspaces"), {})
+
+    def _run_install_with_fake_audit(
+        self,
+        profile_path,
+        target_version,
+        target_root,
+        fake_audit,
+        recovery_output,
+    ):
+        probe = {
+            "version": list(target_version),
+            "user_root": str(target_root),
+            "config_dir": str(target_root / "config"),
+            "scripts_dir": str(target_root / "scripts"),
+            "datafiles_dir": str(target_root / "datafiles"),
+            "extensions_dir": str(target_root / "extensions"),
+        }
+        with mock.patch.object(
+            core, "run_target_probe", return_value=probe
+        ), mock.patch.object(core, "run_target_audit", side_effect=fake_audit):
+            return core.execute_existing_profile_migration(
+                profile_path,
+                self.root / f"Blender {target_version[0]}.{target_version[1]}"
+                / "blender.exe",
+                recovery_output,
+                self.user_root,
+                self.root / "migration_worker.py",
+                current_pid=123,
+            )
+
+    def test_donor_mode_preserves_target_startup_and_restores_workspaces(self):
+        inventory = self.root / "workspaces.json"
+        inventory.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "items": [
+                        {"name": "Layout", "factory": True, "area_types": []},
+                        {"name": "雕刻", "factory": False, "area_types": []},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        profile = core.create_profile(
+            self.snapshot(workspaces_inventory_path=inventory), self.output
+        )
+        target_root = self.root / "target" / "5.2"
+        (target_root / "config").mkdir(parents=True)
+        (target_root / "config" / "startup.blend").write_bytes(b"target startup")
+        recovery_output = self.root / "migration_output"
+        audit_calls = {}
+
+        def fake_audit(*args, **kwargs):
+            audit_calls.update(kwargs)
+            report_path = args[4]
+            report = {
+                "status": "success",
+                "disabled_addons": [],
+                "warnings": [],
+                "workspaces": {
+                    "mode": "donor",
+                    "restored": ["雕刻"],
+                    "skipped": [],
+                    "errors": [],
+                },
+            }
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            return report
+
+        result = self._run_install_with_fake_audit(
+            profile.path, (5, 2, 0), target_root, fake_audit, recovery_output
+        )
+
+        # 目标自己的启动文件（新版布局）被保留，旧版快照不覆盖
+        self.assertEqual(
+            (target_root / "config" / "startup.blend").read_bytes(),
+            b"target startup",
+        )
+        # 捐赠文件被撤出到 recovery 目录
+        donor = result.recovery_dir / "donor_startup.blend"
+        self.assertEqual(donor.read_bytes(), b"startup")
+        # 审计收到了 donor 两个路径
+        self.assertEqual(audit_calls.get("donor_startup"), donor)
+        self.assertTrue(audit_calls.get("workspaces_inventory") is not None)
+        # 结果带恢复明细
+        self.assertEqual(result.workspaces_restored, ["雕刻"])
+        recovery = json.loads(
+            (result.recovery_dir / "recovery.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(recovery["startup_mode"], "donor")
+
+    def test_legacy_mode_same_minor_overwrites_startup_as_before(self):
+        inventory = self.root / "workspaces.json"
+        inventory.write_text(
+            json.dumps({"schema_version": 1, "items": []}), encoding="utf-8"
+        )
+        profile = core.create_profile(
+            self.snapshot(workspaces_inventory_path=inventory), self.output
+        )
+        target_root = self.root / "target" / "5.1"
+        (target_root / "config").mkdir(parents=True)
+        (target_root / "config" / "startup.blend").write_bytes(b"target startup")
+        recovery_output = self.root / "migration_output"
+        audit_calls = {}
+
+        def fake_audit(*args, **kwargs):
+            audit_calls.update(kwargs)
+            report_path = args[4]
+            report = {"status": "success", "disabled_addons": [], "warnings": []}
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            return report
+
+        result = self._run_install_with_fake_audit(
+            profile.path, (5, 1, 9), target_root, fake_audit, recovery_output
+        )
+        # 同主.次版本：维持 v1.4 行为——整文件安装
+        self.assertEqual(
+            (target_root / "config" / "startup.blend").read_bytes(), b"startup"
+        )
+        self.assertFalse((result.recovery_dir / "donor_startup.blend").exists())
+        self.assertIsNone(audit_calls.get("donor_startup"))
+        recovery = json.loads(
+            (result.recovery_dir / "recovery.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(recovery["startup_mode"], "legacy")
+
+    def test_donor_mode_fresh_target_uses_factory_startup(self):
+        """目标从未启动过（无自己的 startup.blend）：捐赠文件撤出后不留启动文件，
+        由目标首次启动走出厂默认布局。"""
+        inventory = self.root / "workspaces.json"
+        inventory.write_text(
+            json.dumps({"schema_version": 1, "items": []}), encoding="utf-8"
+        )
+        profile = core.create_profile(
+            self.snapshot(workspaces_inventory_path=inventory), self.output
+        )
+        target_root = self.root / "target" / "5.2"
+        target_root.mkdir(parents=True)
+        recovery_output = self.root / "migration_output"
+
+        def fake_audit(*args, **kwargs):
+            report_path = args[4]
+            report = {"status": "success", "disabled_addons": [], "warnings": []}
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            return report
+
+        result = self._run_install_with_fake_audit(
+            profile.path, (5, 2, 0), target_root, fake_audit, recovery_output
+        )
+        self.assertFalse((target_root / "config" / "startup.blend").exists())
+        self.assertEqual(
+            (result.recovery_dir / "donor_startup.blend").read_bytes(), b"startup"
+        )
+
+    def test_move_across_drives_falls_back_when_replace_rejected(self):
+        """跨盘 rename（WinError 17）必须回退到 shutil.move，而不是中断。"""
+        src = self.root / "donor_src.blend"
+        src.write_bytes(b"startup")
+        dst = self.root / "recovery_dir" / "donor_startup.blend"
+        dst.parent.mkdir(parents=True)
+
+        with mock.patch.object(
+            core.os,
+            "replace",
+            side_effect=OSError(17, "系统无法将文件移到不同的磁盘驱动器。"),
+        ):
+            core.move_across_drives(src, dst)
+
+        self.assertFalse(src.exists())
+        self.assertEqual(dst.read_bytes(), b"startup")
+
+    def test_donor_mode_survives_cross_drive_recovery_dir(self):
+        """复现真实故障：recovery 目录与目标 Blender 不在同一磁盘时，
+        donor 启动文件撤出走 os.replace 会抛 WinError 17；迁移必须继续成功，
+        绝不能因此整体回滚（用户实测：E 盘配置包 → C 盘 Blender）。"""
+        inventory = self.root / "workspaces.json"
+        inventory.write_text(
+            json.dumps({"schema_version": 1, "items": []}), encoding="utf-8"
+        )
+        profile = core.create_profile(
+            self.snapshot(workspaces_inventory_path=inventory), self.output
+        )
+        target_root = self.root / "target" / "5.2"
+        (target_root / "config").mkdir(parents=True)
+        (target_root / "config" / "startup.blend").write_bytes(b"target startup")
+        recovery_output = self.root / "migration_output"
+        real_replace = core.os.replace
+
+        def cross_drive_replace(src, dst, *args, **kwargs):
+            # 仅模拟 donor 撤出这一步跨盘失败，其余同盘 rename 正常
+            if str(dst).endswith("donor_startup.blend"):
+                raise OSError(17, "系统无法将文件移到不同的磁盘驱动器。")
+            return real_replace(src, dst)
+
+        def fake_audit(*args, **kwargs):
+            report_path = args[4]
+            report = {"status": "success", "disabled_addons": [], "warnings": []}
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            return report
+
+        with mock.patch.object(core.os, "replace", side_effect=cross_drive_replace):
+            result = self._run_install_with_fake_audit(
+                profile.path, (5, 2, 0), target_root, fake_audit, recovery_output
+            )
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(
+            (target_root / "config" / "startup.blend").read_bytes(), b"target startup"
+        )
+        self.assertEqual(
+            (result.recovery_dir / "donor_startup.blend").read_bytes(), b"startup"
+        )
+
     def test_audit_failure_rolls_back_and_exposes_recovery_directory(self):
         profile = core.create_profile(self.snapshot(), self.output)
         target_root = self.root / "target" / "5.2"
