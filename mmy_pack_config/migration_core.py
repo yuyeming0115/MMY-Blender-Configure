@@ -746,6 +746,20 @@ def extract_directory_backup(
         raise
 
 
+def move_across_drives(src: Path, dst: Path) -> None:
+    """移动文件/目录，兼容跨磁盘场景。
+
+    Windows 上 ``os.replace`` 无法跨盘（抛 WinError 17「系统无法将文件移到
+    不同的磁盘驱动器」）。同一磁盘走原子 rename；跨盘退化为 ``shutil.move``
+    （复制后删除）。配置包与目标 Blender 常不在同一盘（例如包在 U 盘/E 盘、
+    Blender 装在 C 盘），此处必须容错。
+    """
+    try:
+        os.replace(src, dst)
+    except OSError:
+        shutil.move(str(src), str(dst))
+
+
 def atomic_install(staging_root: Path, target_root: Path, run_id: str) -> Path | None:
     target_root.parent.mkdir(parents=True, exist_ok=True)
     old_root = target_root.parent / f".{target_root.name}.mmy_old_{run_id}"
@@ -1281,7 +1295,9 @@ def _install_profile(
             installed_startup = target_root / "config" / "startup.blend"
             donor_startup_path = recovery_dir / "donor_startup.blend"
             if installed_startup.is_file():
-                os.replace(installed_startup, donor_startup_path)
+                # recovery_dir 常与 target_root 不同盘（配置包在 E 盘/U 盘、
+                # Blender 在 C 盘），必须走跨盘安全的移动
+                move_across_drives(installed_startup, donor_startup_path)
             # 恢复目标自己的启动文件（新版默认布局）；用 copy2 而非 move，
             # 保持 old_root 原样，确保审计失败回滚后逐字节一致
             previous_startup = (
