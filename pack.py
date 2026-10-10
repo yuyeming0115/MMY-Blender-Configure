@@ -12,12 +12,30 @@ MMY Blender Configure — 打包工具（双重功能）
   python pack.py <portable_path> [output] # 命令行模式
 """
 
+from __future__ import annotations
+
 import json
 import re
 import sys
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from datetime import datetime
+
+
+def _emit_progress(
+    progress: Callable[..., None] | None,
+    stage: str,
+    message: str,
+    ratio: float | None = None,
+) -> None:
+    """向上层（GUI）上报阶段进度；回调异常绝不打断打包。"""
+    if progress is None:
+        return
+    try:
+        progress(stage, message, ratio)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ============================================================
@@ -68,7 +86,7 @@ def get_addon_version():
     return "1.0.0"
 
 
-def pack_addon():
+def pack_addon(progress: Callable[..., None] | None = None):
     """
     打包插件本身（mmy_pack_config/ → releases/）
 
@@ -103,15 +121,20 @@ def pack_addon():
     for f in ADDON_DIR.rglob("*"):
         if f.is_file() and "__pycache__" not in f.parts and not f.name.endswith(".pyc"):
             all_files.append(f)
-    
+
     print(f"[3/3] 打包 {len(all_files)} 个文件...")
     print()
-    
+
+    _emit_progress(progress, "compress", f"压缩 {len(all_files)} 个文件")
     with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for file_path in all_files:
+        for index, file_path in enumerate(all_files, start=1):
             arcname = Path("mmy_pack_config") / file_path.relative_to(ADDON_DIR)
             arcname_str = str(arcname).replace("\\", "/")
             zf.write(file_path, arcname_str)
+            if all_files and index % 20 == 0:
+                _emit_progress(
+                    progress, "compress", f"已压缩 {index}/{len(all_files)}", index / len(all_files)
+                )
     
     size_mb = output_path.stat().st_size / 1024 / 1024
     print(f"[MMY] [OK] 打包完成！")
@@ -302,47 +325,62 @@ def get_unique_output_path(output_path):
         counter += 1
 
 
-def pack_portable(portable_path, output_path, compress=False, exclude_patterns=None):
+def pack_portable(
+    portable_path,
+    output_path,
+    compress=False,
+    exclude_patterns=None,
+    progress: Callable[..., None] | None = None,
+):
     """
     打包整个 Blender portable/ 文件夹。
-    
+
     Args:
         portable_path:     portable 文件夹路径
         output_path:       输出的 zip 文件路径
         compress:          是否启用 ZIP_DEFLATED 压缩（默认关闭，速度快 5-10x）
         exclude_patterns:  排除模式列表。None 时使用默认 EXCLUDE_PATTERNS；
                           传 [] 或 --all 则不排除任何文件
+        progress:          可选阶段回调 (stage, message, ratio)
     """
     portable_path = Path(portable_path)
     output_path = Path(output_path)
-    
+
     if not portable_path.exists():
         raise FileNotFoundError(f"portable 文件夹不存在：{portable_path}")
-    
+
     if exclude_patterns is None:
         exclude_patterns = EXCLUDE_PATTERNS
     use_exclude = len(exclude_patterns) > 0
-    
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     packed_files = 0
     skipped_files = 0
     total_bytes = 0
     exclude_reasons = {}   # {原因描述: 计数}
     output_resolved = output_path.resolve(strict=False)
-    
+
     compression = zipfile.ZIP_DEFLATED if compress else zipfile.ZIP_STORED
     mode_label = "压缩" if compress else "存储（快速）"
-    
+
+    # GUI 需要真实百分比时才预扫描总数；命令行/插件场景不做这遍额外遍历
+    total_files = 0
+    if progress is not None:
+        _emit_progress(progress, "scan", "扫描文件…")
+        total_files = sum(1 for item in portable_path.rglob("*") if item.is_file())
+        _emit_progress(progress, "scan", f"共 {total_files} 个文件", 0.0)
+
     print(f"[MMY] 开始打包 {portable_path}")
-    print("[MMY] 总文件数：边打包边统计（跳过预扫描）")
+    print(f"[MMY] 总文件数：{total_files or '边打包边统计（跳过预扫描）'}")
     print(f"[MMY] 输出到：{output_path}")
     print(f"[MMY] 模式：{mode_label}")
     if use_exclude:
         print(f"[MMY] 排除规则：{len(exclude_patterns)} 类")
     else:
         print(f"[MMY] 排除规则：无（--all 模式，包含所有文件）")
-    
+
+    _emit_progress(progress, "compress", f"写入 ZIP（{mode_label}）", 0.0)
     with zipfile.ZipFile(output_path, "w", compression) as zf:
         for file_path in portable_path.rglob("*"):
             if not file_path.is_file():
@@ -357,7 +395,7 @@ def pack_portable(portable_path, output_path, compress=False, exclude_patterns=N
                     skipped_files += 1
                     exclude_reasons[reason] = exclude_reasons.get(reason, 0) + 1
                     continue
-            
+
             arcname = file_path.relative_to(portable_path.parent)
             arcname_str = str(arcname).replace("\\", "/")
             zf.write(file_path, arcname_str)
@@ -369,6 +407,13 @@ def pack_portable(portable_path, output_path, compress=False, exclude_patterns=N
 
             if packed_files % 1000 == 0:
                 print(f"[MMY]   进度：已打包 {packed_files}，已跳过 {skipped_files}...")
+            if packed_files % 200 == 0:
+                _emit_progress(
+                    progress,
+                    "compress",
+                    f"已打包 {packed_files} / {total_files}",
+                    packed_files / total_files if total_files else None,
+                )
 
         # ---- 写入 manifest.json（备份可辨识度）----
         import platform
