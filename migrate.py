@@ -129,6 +129,11 @@ def is_portable_user_root(user_root, executable_path) -> bool:
     return Path(str(user_root)) == Path(executable_path).parent / "portable"
 
 
+def source_user_root(manifest: dict) -> str:
+    """配置包记录的源用户目录（v1.4 及更早的包没有该字段，返回空串）。"""
+    return str((manifest.get("source") or {}).get("user_root") or "")
+
+
 def preflight_target(manifest: dict, executable_path) -> dict:
     """迁移前用目标探针读出真实信息：版本、用户目录、便携模式、版本合法性。
 
@@ -151,6 +156,15 @@ def preflight_target(manifest: dict, executable_path) -> dict:
     except core.MigrationError as exc:
         raise MigrateInputError(str(exc))
 
+    # 自迁移检测：配置包记录了源用户目录时，禁止把包导回它自己
+    origin = source_user_root(manifest)
+    if origin and Path(origin) == Path(user_root):
+        raise MigrateInputError(
+            "目标 Blender 就是配置包的来源，不能自己导入自己：\n"
+            f"  {user_root}\n"
+            "请选择另一台机器/另一个版本的 Blender。"
+        )
+
     incompatible = core.predict_addon_compatibility(
         manifest.get("addons") or [], version
     )
@@ -158,6 +172,7 @@ def preflight_target(manifest: dict, executable_path) -> dict:
         "version": version_string(version),
         "user_root": user_root,
         "portable": is_portable_user_root(user_root, target),
+        "source_user_root": origin,
         "incompatible": incompatible,
     }
 
@@ -209,10 +224,11 @@ def describe_profile(
             "   然后重新运行。",
             "",
         ]
-    lines += [
-        "目标 Blender 的现有配置将备份，可随时回滚。",
-        "⚠ 请确认目标不是配置包的来源 Blender（本工具无法自动识别）。",
-    ]
+    lines.append("目标 Blender 的现有配置将备份，可随时回滚。")
+    if preflight and preflight.get("source_user_root"):
+        lines.append(f"  来源配置目录：{preflight['source_user_root']}（已自动排除自迁移）")
+    else:
+        lines.append("⚠ 配置包未记录来源目录，请自行确认目标不是它的来源 Blender。")
     return "\n".join(lines)
 
 
@@ -237,7 +253,8 @@ def run_migration(profile_path, executable_path, preflight: dict | None = None) 
         profile_path=profile,
         target_executables=[target],
         output_dir=profile.parent,  # recovery/报告放配置包旁边，天然在目标用户目录之外
-        current_user_root=[],  # CLI 无源用户目录；确认弹窗已提示勿对来源 Blender 导入
+        # 有源用户目录就用它还原自迁移防护；v1.4 旧包没有该字段则传 None
+        current_user_root=source_user_root(manifest) or None,
         worker_script=WORKER_SCRIPT,
         current_pid=os.getpid(),
     )

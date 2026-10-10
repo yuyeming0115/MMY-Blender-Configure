@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -127,6 +128,86 @@ class PortableDetectionTests(unittest.TestCase):
         self.assertFalse(migrate.is_portable_user_root("", r"C:\x\blender.exe"))
 
 
+class SourceUserRootTests(unittest.TestCase):
+    def test_reads_source_user_root(self):
+        self.assertEqual(
+            migrate.source_user_root({"source": {"user_root": "C:/Blender/portable"}}),
+            "C:/Blender/portable",
+        )
+
+    def test_missing_field_returns_empty(self):
+        self.assertEqual(migrate.source_user_root({"source": {}}), "")
+        self.assertEqual(migrate.source_user_root({}), "")
+
+
+class _FakeCore:
+    """preflight_target 的最小替身：不启动真实 Blender。"""
+
+    class MigrationError(Exception):
+        pass
+
+    def __init__(self, user_root):
+        self._user_root = user_root
+
+    def windows_executable_is_running(self, target, pids):
+        return False
+
+    def run_target_probe(self, target, timeout=60):
+        return {"version": [5, 2, 0], "user_root": self._user_root}
+
+    def normalize_version(self, value):
+        return tuple(value)
+
+    def validate_forward_version(self, source, target):
+        return tuple(target)
+
+    def predict_addon_compatibility(self, addons, version):
+        return []
+
+
+class PreflightTargetTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.exe = self.tmp / "blender.exe"
+        self.exe.write_bytes(b"stub")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _preflight(self, user_root, source_user_root=""):
+        manifest = {
+            "source": {"blender_version": [5, 1, 0], "platform": "win32"},
+            "addons": [],
+        }
+        if source_user_root:
+            manifest["source"]["user_root"] = source_user_root
+        fake = _FakeCore(user_root)
+        with mock.patch.object(migrate, "load_migration_core", return_value=fake):
+            return migrate.preflight_target(manifest, self.exe)
+
+    def test_self_migration_rejected_with_explicit_message(self):
+        root = str(self.tmp / "portable")
+        with self.assertRaises(migrate.MigrateInputError) as ctx:
+            self._preflight(root, source_user_root=root)
+        message = str(ctx.exception)
+        self.assertIn("来源", message)
+        self.assertIn("不能自己导入自己", message)
+
+    def test_other_source_passes_and_reports_paths(self):
+        info = self._preflight(
+            str(self.tmp / "portable"),
+            source_user_root=r"C:\BlenderAPP\Blender5.1\portable",
+        )
+        self.assertEqual(info["version"], "5.2")
+        self.assertTrue(info["portable"])
+        self.assertEqual(info["source_user_root"], r"C:\BlenderAPP\Blender5.1\portable")
+
+    def test_legacy_profile_without_source_root_is_allowed(self):
+        info = self._preflight(str(self.tmp / "portable"))
+        self.assertEqual(info["source_user_root"], "")
+
+
 class DescribeProfileTests(unittest.TestCase):
     def test_summary_contains_key_info(self):
         manifest = {
@@ -194,6 +275,24 @@ class DescribeProfileTests(unittest.TestCase):
         )
         self.assertIn("不兼容插件", text)
         self.assertIn("BoxCutter", text)
+
+    def test_preflight_shows_source_root_when_known(self):
+        manifest = {
+            "source": {"blender_version": [5, 1, 0], "platform": "win32"},
+            "addons": [],
+        }
+        preflight = {
+            "version": "5.2",
+            "user_root": r"C:\BlenderAPP\Blender5.2\portable",
+            "portable": True,
+            "source_user_root": r"C:\BlenderAPP\Blender5.1\portable",
+            "incompatible": [],
+        }
+        text = migrate.describe_profile(
+            manifest, r"C:\BlenderAPP\Blender5.2\blender.exe", None, preflight
+        )
+        self.assertIn("已自动排除自迁移", text)
+        self.assertNotIn("未记录来源目录", text)
 
 
 if __name__ == "__main__":

@@ -51,6 +51,8 @@ v1.4 迁移体系的执行链（`migration_core.execute_existing_profile_migrati
 
 - 真实版本 → 版本策略（同主版本 + 向前-only）提前拦截，避免走完流程才失败
 - 真实 `user_root` → **便携模式检测**：`user_root` 是否等于 exe 同级 `portable/`
+- **自迁移检测**：配置包的 `source.user_root`（v1.5.0 起写入 manifest）与目标
+  实测 `user_root` 相同 → 直接拒绝（"不能自己导入自己"）
 - 目标是否正在运行（提前提示关闭）
 - 按 manifest 预测不兼容插件（确认页列名）
 
@@ -96,10 +98,13 @@ migration_core.execute_existing_profile_migration_multi(
 - 配置包放在目标 portable 目录内 → 核心层已有 `path_is_within` 检查
 - **目标未启用便携模式** → 预检检出并在确认页拦截式警告（见 §2.3.1）
 - 版本策略非法（跨主版本 / 目标不高于源）→ 预检提前报错，流程不空跑
-- **自我迁移限制**：插件内导入用 `current_user_root` 防止"在同一台机器的同一
-  Blender 上导入自己导出的包"。CLI 不知道配置包来自哪台机器，该保护失效——
-  若用户在本机对来源 Blender 执行导入，会覆盖其当前配置（有备份可回滚，
-  但属于误操作）。缓解：确认弹窗明示"请确认目标不是配置包的来源 Blender"。
+- **自我迁移防护**：插件内导入用运行时的 `current_user_root`；CLI 侧改为
+  从配置包 manifest 读取 `source.user_root`（v1.5.0 起随导出写入）并传入
+  核心层 → 防护等价还原。仅当包是 v1.4 及更早（无该字段）时才退化为
+  确认页提示，由用户自行确认。
+- `current_user_root` 参数支持 `None`（无 Blender 会话场景跳过该防护）；
+  历史上误传列表会触发 `TypeError: argument should be a str or an
+  os.PathLike object`，已在核心层与 CLI 侧各加回归测试。
 - 回滚：与插件内导入同一 recovery 机制（原子交换 + 恢复元数据 + restore_recovery）
 
 ## 4. 验证
